@@ -73,6 +73,12 @@ def strip_md(t):
     t = re.sub(r"`([^`]*)`", r"\1", t)
     t = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", t)
     t = re.sub(r"^\s*[-*+]\s+", "", t, flags=re.M)
+    # A heading ENDS a sentence. Stripping the `#` and leaving the text bare
+    # runs the heading into the paragraph below it, so "## Context" followed by
+    # a 24-word opener measured as one 30-word sentence. Every document with
+    # headings was affected, which is all of them, and the longest-sentence
+    # number was wrong in the same direction every time.
+    t = re.sub(r"^\s*#{1,6}\s+(.+?)\s*$", r"\1.", t, flags=re.M)
     t = re.sub(r"[*_#>]+", "", t)
     return t
 

@@ -521,6 +521,24 @@ def main() -> int:
         got = run(kb, ["pack", "zebra", "--budget", value], fresh)
         check(f"pack survives --budget {value}", "KB OK" in got.stdout, got.stdout + got.stderr)
 
+    # --- prose ---------------------------------------------------------------
+    # Only the markdown stripper, which is pure and needs no venv. The engine
+    # itself needs textstat, and a smoke test must not depend on that.
+    print("\nprose")
+    sys.path.insert(0, str(PLUGINS / "writing" / "lib"))
+    try:
+        import prose_impl
+
+        stripped = prose_impl.strip_md("## Context\n\nTwo questions kept coming up here.\n")
+        longest = max((len(s.split()) for s in stripped.replace("\n", " ").split(". ")), default=0)
+        check("a heading ends a sentence", longest <= 6, repr(stripped))
+        check("front matter is stripped",
+              "id: 7" not in prose_impl.strip_md("---\nid: 7\n---\n\nBody.\n"))
+        check("fenced code is stripped",
+              "secret" not in prose_impl.strip_md("Text.\n\n```\nsecret\n```\n"))
+    except Exception as exc:  # pragma: no cover
+        check("prose stripper importable", False, str(exc))
+
     # --- claim gate ---------------------------------------------------------
     print("\nclaim gate")
     claim = bin_path("claim-gate", "claim")
