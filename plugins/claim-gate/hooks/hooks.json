@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${user_config.python}",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/claim_guard.py"],
+            "timeout": 15,
+            "statusMessage": "checking the numbers carry a label"
+          }
+        ]
+      }
+    ]
+  }
+}

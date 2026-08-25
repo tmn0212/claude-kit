@@ -26,7 +26,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 MARKETPLACE = "tmn0212/claude-kit"
-PLUGINS = ["knowledge-core", "session-economics", "writing", "agent-tiers"]
+PLUGINS = ["knowledge-core", "session-economics", "writing", "agent-tiers", "claim-gate"]
 # Plugins with no hooks declare no userConfig, so --config is a no-op there.
 NO_USER_CONFIG = {"writing"}
 

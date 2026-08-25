@@ -127,6 +127,45 @@ from your own transcripts, which is what makes the numbers yours.
 installs them. Vale is optional and separate: without it, `prose lint` is
 skipped and everything else still works.
 
+### claim-gate
+
+The one gap a survey of existing tooling could not fill: nothing ties a claim to
+a measurement. `hyperfine` and Criterion compute a sample size and a spread,
+Bencher stores them, and no gate consumes them.
+
+Two halves. A Stop hook refuses to end a turn on a comparative claim in numbers
+that never says how the number is known:
+
+```
+The aligned path is 1.7x faster than the misaligned one.
+   -> blocked: add measured, derived, assumed, or not verified
+```
+
+Four things have to hold. A number with a unit. A comparison in the same
+sentence. Both outside any code fence. And no label anywhere in the message.
+
+It fires once per session, so it stays a nudge.
+
+The other half binds a number to the code behind it, and notices when that
+moves:
+
+```sh
+claim record --id sd.aligned --value 21.9 --unit MB/s \
+             --cmd './bench.sh 2.1b' --source src/sd.c --cond 'n=3, A2 card'
+claim verify     # CLAIM DRIFT, exit 1, when a named source has changed
+```
+
+Content hashes, not timestamps. A checkout or a rebase moves mtime without
+changing what the measurement depended on, and a staleness signal that cries
+wolf is one people turn off.
+
+The ledger is append-only and belongs in git. A number without its conditions is
+noise. A number whose producing code has since changed is worse, because it
+still looks like an answer.
+
+It cannot tell whether a label is TRUE. Nothing can, from text alone. It makes
+the omission visible, and gives the number somewhere to be checked.
+
 ### agent-tiers
 
 Effort cannot be set when an agent is called, so the budget lives in the

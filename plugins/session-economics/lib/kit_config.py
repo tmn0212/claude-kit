@@ -75,6 +75,27 @@ DEFAULTS: dict = {
         # Directories a bare relative path is likely rooted at.
         "root_relative_dirs": ["tools", "docs", "src", "tests"],
     },
+    "claims": {
+        # The Stop hook that refuses to end a turn on a comparative claim in
+        # numbers with no evidence label. Set false to turn it off.
+        "gate": True,
+        "ledger": "claims/ledger.jsonl",
+        # The vocabulary that satisfies the gate. Yours may differ; what
+        # matters is that a reader can tell a measurement from a guess.
+        "labels": [
+            "measured",
+            "derived",
+            "from a spec",
+            "from the datasheet",
+            "read in the source",
+            "from docs",
+            "assumed",
+            "unverified",
+            "not verified",
+            "not reproduced",
+            "estimated",
+        ],
+    },
     "guards": {
         # A Read larger than this, of an indexed document, is refused.
         "read_bytes": 24000,

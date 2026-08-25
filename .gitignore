@@ -15,3 +15,6 @@ log/
 # Backups the installer leaves behind.
 *.bak
 *.bak-*
+
+# The claim ledger is evidence, not state, so it is NOT ignored.
+# log/ above already covers the claim-gate session markers.

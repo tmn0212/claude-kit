@@ -521,6 +521,64 @@ def main() -> int:
         got = run(kb, ["pack", "zebra", "--budget", value], fresh)
         check(f"pack survives --budget {value}", "KB OK" in got.stdout, got.stdout + got.stderr)
 
+    # --- claim gate ---------------------------------------------------------
+    print("\nclaim gate")
+    claim = bin_path("claim-gate", "claim")
+    claim_hook = PLUGINS / "claim-gate" / "hooks" / "claim_guard.py"
+
+    (fresh / "src").mkdir(exist_ok=True)
+    source = fresh / "src" / "sd.c"
+    source.write_text("int read_block(void) { return 0; }\n")
+
+    recorded = run(claim, ["record", "--id", "sd.aligned", "--value", "21.9", "--unit", "MB/s",
+                           "--cmd", "./bench.sh 2.1b", "--source", "src/sd.c",
+                           "--cond", "n=3"], fresh)
+    expect_signal("claim record", recorded, "CLAIM OK")
+    expect_signal("claim list", run(claim, ["list"], fresh), "CLAIM OK")
+    expect_signal("claim show", run(claim, ["show", "sd.aligned"], fresh), "CLAIM OK")
+    expect_signal("claim verify, unchanged", run(claim, ["verify"], fresh), "CLAIM OK")
+
+    # A claim with nothing behind it cannot go stale, which means it also
+    # cannot be checked, so recording one is refused.
+    naked = run(claim, ["record", "--id", "x", "--value", "1", "--unit", "s"], fresh)
+    check("claim record needs a source", naked.returncode == 1, naked.stdout + naked.stderr)
+
+    source.write_text("int read_block(void) { return 1; }\n")
+    drift = run(claim, ["verify"], fresh)
+    check("claim verify reports drift", "CLAIM DRIFT" in drift.stdout, drift.stdout)
+    check("drift exits non-zero, so CI can gate on it", drift.returncode == 1, str(drift.returncode))
+    check("drift names the re-measure command", "./bench.sh 2.1b" in drift.stdout, drift.stdout)
+
+    def stop_hook(text, session, active=False):
+        transcript = fresh / "t.jsonl"
+        transcript.write_text(json.dumps(
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}}) + "\n")
+        env = dict(os.environ)
+        env["CLAUDE_PROJECT_DIR"] = str(fresh)
+        return subprocess.run(
+            [sys.executable, str(claim_hook)],
+            input=json.dumps({"transcript_path": str(transcript), "session_id": session,
+                              "stop_hook_active": active}),
+            capture_output=True, text=True, cwd=str(fresh), env=env, timeout=30,
+        ).stdout.strip()
+
+    blocked = stop_hook("The aligned path is 1.7x faster than the misaligned one.", "b1")
+    check("gate blocks an unlabelled comparative claim", '"block"' in blocked, blocked)
+
+    for label, text, session in [
+        ("labelled", "It is 1.7x faster. `measured (n=3)`, bench 2.1b.", "a1"),
+        ("no comparison", "The file is 200 lines and lives in src/.", "a2"),
+        ("inside a fence", "Output:\n\n```\n21.9 MB/s faster\n```\n", "a3"),
+        ("no numbers", "The aligned path is faster, and I have not measured it.", "a4"),
+    ]:
+        got = stop_hook(text, session)
+        check(f"gate allows: {label}", got == "", got)
+
+    check("gate fires once per session",
+          stop_hook("It is 1.7x faster.", "once") != "" and stop_hook("It is 1.7x faster.", "once") == "")
+    check("gate respects stop_hook_active",
+          stop_hook("It is 1.7x faster.", "act", active=True) == "")
+
     # --- result -------------------------------------------------------------
     print()
     if args.keep:

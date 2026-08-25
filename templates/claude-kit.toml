@@ -100,3 +100,21 @@ depth_tiers = [300, 500, 700]
 # An inline interpreter heredoc longer than this is refused. Short ones pass: a
 # three-line one-liner is cheaper than creating a file.
 heredoc_lines = 25
+
+
+[claims]
+# The Stop hook refuses to end a turn on a comparative claim in numbers that
+# never says how the number is known. It fires once per session, and only when
+# a sentence has BOTH a number with a unit AND a comparison, outside any code
+# fence, in a message carrying no label anywhere.
+gate = true
+
+# Where `claim record` appends. This belongs in git: it is evidence, not state.
+ledger = "claims/ledger.jsonl"
+
+# What satisfies the gate. Yours may differ; what matters is that a reader can
+# tell a measurement from a guess.
+labels = [
+    "measured", "derived", "from a spec", "read in the source",
+    "from docs", "assumed", "unverified", "not verified", "estimated",
+]

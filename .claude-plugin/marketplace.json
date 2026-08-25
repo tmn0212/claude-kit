@@ -1,6 +1,9 @@
 {
   "name": "claude-kit",
-  "owner": { "name": "Minh Nguyen", "url": "https://github.com/tmn0212" },
+  "owner": {
+    "name": "Minh Nguyen",
+    "url": "https://github.com/tmn0212"
+  },
   "metadata": {
     "description": "A project template for working with Claude Code: an indexed knowledge base, decision records, session cost instrumentation, writing control, and tiered subagents.",
     "version": "0.1.0"
@@ -25,6 +28,11 @@
       "name": "agent-tiers",
       "source": "./plugins/agent-tiers",
       "description": "Paired thorough and cheap subagents with one output contract, plus the prompt-shaper skill."
+    },
+    {
+      "name": "claim-gate",
+      "source": "./plugins/claim-gate",
+      "description": "Refuses to end a turn on a comparative claim in numbers that never says how the number is known, and binds a measurement to the code that produced it."
     }
   ]
 }

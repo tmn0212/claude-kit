@@ -1,0 +1,38 @@
+# claude-kit, configured for itself.
+#
+# The tool that says a project's knowledge belongs in an index, and its
+# decisions in records, should hold its own that way. If this file were absent
+# the kit would still work on its own defaults; having it is the point.
+
+[project]
+name = "claude-kit"
+
+[kb]
+sources = ["docs", "templates"]
+extensions = [".md"]
+skip_dirs = [".git", ".venv", "__pycache__", "node_modules", "_out"]
+generic_stems = ["readme", "index"]
+
+[kb.aliases]
+# Terms this repo uses under more than one name. Kept short on purpose: a
+# thesaurus makes every query match everything.
+hook = ["hooks", "guard"]
+plugin = ["marketplace", "plugins"]
+config = ["configuration", "toml", "settings"]
+venv = ["virtualenv", "virtual environment"]
+cmd = ["launcher", "batch file"]
+
+[adr]
+dir = "docs/decisions"
+
+[promote]
+scratch = "tools/scratch"
+dest = "tools"
+registry = ""
+
+[guards]
+# The plugins under development here are the same ones installed at user scope,
+# so their hooks already run in this tree. Leaving this true would not double
+# anything: the installed copy is what fires, and it reads this file.
+enabled = true
+read_bytes = 24000
