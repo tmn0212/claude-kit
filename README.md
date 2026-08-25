@@ -23,10 +23,14 @@ instrumentation, writing control, and tiered subagents, in two commands.
 ├─ claim-gate ──────────────────────────────────────────────────┤
 │  a Stop hook that refuses an unlabelled number                │
 │  claim      binds a measurement to the code behind it         │
+├─ rrun  (vendored, not a plugin) ──────────────────────────────┤
+│  zero-escaping remote and cross-shell execution               │
+│  the payload rides as base64, never inside a quote            │
 └───────────────────────────────────────────────────────────────┘
 ```
 
-Install what you want; the five are independent.
+Install what you want; the five plugins are independent. `rrun` is vendored as
+a submodule and installs separately: see [docs/rrun.md](docs/rrun.md).
 
 ## Install
 
@@ -199,6 +203,37 @@ refusal is the tier working, not failing.
 `prompt-shaper` asks how much research an ask is worth before spending any, then
 fans out agents with different lenses and writes a standalone prompt file.
 
+### rrun
+
+The one part that is not a plugin. [rrun](https://github.com/andrewsalinas09/rrun)
+is vendored as a submodule at `rrun/`, pinned to a commit, and it installs
+itself rather than through the marketplace.
+
+It removes escaping from remote and cross-shell execution. A command that
+crosses PowerShell, Git Bash, WSL and a remote shell crosses four parsers, and
+counting which one eats each quote fails routinely and fails quietly: the
+payload still runs, just not the one you wrote. rrun sends the payload as
+base64, which no shell treats as syntax, and only the executing shell decodes
+it.
+
+```sh
+git submodule update --init rrun     # a plain clone does not fetch it
+& .\rrun\install.ps1                 # Windows; needs a real default WSL distro
+```
+
+```sh
+rrun -s bash HOST -c '...'    # Linux target. The default -s is ps, not bash
+rrun -s bash local -c '...'   # replaces a nested powershell -Command
+rrun -s bash a,b -c '...'     # replaces ssh a "ssh b ...", re-armored per hop
+rrun adb -c '...'             # an Android device over adb shell
+rrun -n ...                   # dry run: print the composed command
+```
+
+It also ships a `PreToolUse` advisory that warns when a command hand-crosses a
+boundary it covers. That hook can collide with a consolidated hook setup, and
+its Windows install has three traps worth reading before you hit them.
+[docs/rrun.md](docs/rrun.md) covers both.
+
 ## Configuration
 
 One file, `claude-kit.toml`, at the project root. Every key has a default, so no
@@ -241,7 +276,10 @@ See [docs/windows.md](docs/windows.md) for the rest, including why
 - Python 3.11 or newer, for `tomllib`.
 - SQLite with FTS5, which is what CPython ships.
 - Git, for the parts of `brief` that report repository state.
-- Optional: [Vale](https://vale.sh) for `prose lint`.
+- Optional: [Vale](https://vale.sh) for `prose lint`. Without it that one step
+  is skipped and every other check still runs.
+- For `rrun` on Windows only: WSL with a real default distro. See
+  [docs/rrun.md](docs/rrun.md). Nothing else in the kit needs WSL.
 
 ## Testing
 
@@ -275,8 +313,13 @@ one that worked.
 
 ## Related
 
+Both are vendored here as submodules, pinned to a commit rather than copied.
+
 [claude-statusline-grid](https://github.com/tmn0212/claude-statusline-grid), a
 two-row status line that puts its numbers on a fixed grid.
+
+[rrun](https://github.com/andrewsalinas09/rrun), zero-escaping remote and
+cross-shell execution. See [docs/rrun.md](docs/rrun.md).
 
 ## Licence
 

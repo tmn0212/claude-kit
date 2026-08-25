@@ -21,6 +21,7 @@ plugin = ["marketplace", "plugins"]
 config = ["configuration", "toml", "settings"]
 venv = ["virtualenv", "virtual environment"]
 cmd = ["launcher", "batch file"]
+rrun = ["escaping", "quoting", "remote", "ssh", "wsl"]
 
 [adr]
 dir = "docs/decisions"

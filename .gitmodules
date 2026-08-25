@@ -1,3 +1,6 @@
 [submodule "claude-statusline-grid"]
 	path = claude-statusline-grid
 	url = https://github.com/tmn0212/claude-statusline-grid.git
+[submodule "rrun"]
+	path = rrun
+	url = https://github.com/andrewsalinas09/rrun.git

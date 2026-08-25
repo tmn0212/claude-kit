@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -109,11 +110,34 @@ def stage_smoke() -> tuple[bool, str]:
     return True, result.stdout.strip().splitlines()[-2]
 
 
+def vendored_paths() -> set[str]:
+    """Paths git tracks as submodules, as posix-relative strings.
+
+    A vendored repo's writing is not this repo's to gate, and its README answers
+    to its own house style. The exclusion list here used to be three hardcoded
+    names, which held only because the first submodule happened to pass these
+    thresholds. The second one did not, and took the whole suite down with it.
+    """
+    gitmodules = ROOT / ".gitmodules"
+    if not gitmodules.is_file():
+        return set()
+    return set(
+        re.findall(r"^\s*path\s*=\s*(.+?)\s*$", gitmodules.read_text(encoding="utf-8"), re.M)
+    )
+
+
 def stage_prose() -> tuple[bool, str]:
     prose = ROOT / "plugins" / "writing" / "bin" / "prose"
+    vendored = vendored_paths()
+
+    def is_ours(p: Path) -> bool:
+        rel = p.relative_to(ROOT).as_posix()
+        return not any(rel == v or rel.startswith(v + "/") for v in vendored)
+
     docs = sorted(
         p for p in ROOT.rglob("*.md")
         if ".venv" not in p.parts and ".git" not in p.parts and "vale" not in p.parts
+        and is_ours(p)
     )
     probe = subprocess.run(
         [sys.executable, str(prose), "score", "-"],
