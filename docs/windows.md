@@ -20,7 +20,14 @@ and a `py` entry would run both wherever both exist.
 
 The mechanism that does work is `userConfig`. Each plugin declares a `python`
 option, defaulting to `python3`, and Claude Code substitutes it into the hook's
-`command`. You set it once per plugin at enable time.
+`command`. Set it once per plugin, either at install time:
+
+```
+claude plugin install session-economics@claude-kit --scope user --config python=py
+```
+
+or later, from inside a session, with `/plugin configure session-economics@claude-kit`.
+There is no `claude plugin configure` subcommand.
 
 ## Why `.gitattributes` is in the repo
 

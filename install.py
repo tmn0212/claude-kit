@@ -144,12 +144,13 @@ def main() -> int:
 
     print("\nNow install the plugins. Add the marketplace once, then take what you want:")
     print()
+    interpreter = "py" if os.name == "nt" else "python3"
     print(f"  claude plugin marketplace add {MARKETPLACE}")
     for name in PLUGINS:
-        print(f"  claude plugin install {name}@claude-kit --scope user")
+        print(f"  claude plugin install {name}@claude-kit --scope user --config python={interpreter}")
     print()
-    print("On Windows, set each plugin's `python` option to `py` when prompted,")
-    print("because Windows has no `python3` on PATH.")
+    print(f"The `python` option is set to `{interpreter}` above because that is what")
+    print("this platform has. Change it later with `/plugin configure <plugin>`.")
     print()
     print("INSTALL OK")
     return 0

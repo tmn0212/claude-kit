@@ -29,12 +29,15 @@ Install what you want; the four are independent.
 
 ```sh
 claude plugin marketplace add tmn0212/claude-kit
-claude plugin install knowledge-core@claude-kit --scope user
+claude plugin install knowledge-core@claude-kit --scope user --config python=python3
 ```
 
 Repeat for `session-economics`, `writing` and `agent-tiers`. That is the whole
 installation: a plugin ships its own skills, agents, output styles, hooks and a
 `bin/` directory that joins the Bash tool's PATH while it is enabled.
+
+On Windows pass `--config python=py` instead. To change it later, run
+`/plugin configure <plugin>@claude-kit` inside a session.
 
 One thing a plugin cannot ship is a user-level `CLAUDE.md`, so that has a script:
 
