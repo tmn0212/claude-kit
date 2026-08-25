@@ -3,16 +3,24 @@
   "displayName": "Agent tiers",
   "version": "0.1.0",
   "description": "Paired subagents, a thorough one and a cheap one with the same output contract, plus the prompt-shaper skill that decides how much research an ask is worth before spending any.",
-  "author": { "name": "Minh Nguyen" },
+  "author": {
+    "name": "Minh Nguyen"
+  },
   "homepage": "https://github.com/tmn0212/claude-kit",
   "repository": "https://github.com/tmn0212/claude-kit",
   "license": "MIT",
-  "keywords": ["subagents", "delegation", "effort", "prompt-engineering"],
+  "keywords": [
+    "subagents",
+    "delegation",
+    "effort",
+    "prompt-engineering"
+  ],
   "userConfig": {
     "python": {
       "type": "string",
       "description": "Python 3 interpreter name. Linux and macOS: python3. Windows: py (or python).",
-      "default": "python3"
+      "default": "python3",
+      "title": "Python interpreter"
     }
   }
 }

@@ -3,16 +3,25 @@
   "displayName": "Session economics",
   "version": "0.1.0",
   "description": "Measures where sessions burn tokens and wall-clock time, and installs the guards that stop them doing it again.",
-  "author": { "name": "Minh Nguyen" },
+  "author": {
+    "name": "Minh Nguyen"
+  },
   "homepage": "https://github.com/tmn0212/claude-kit",
   "repository": "https://github.com/tmn0212/claude-kit",
   "license": "MIT",
-  "keywords": ["cost", "tokens", "hooks", "context", "instrumentation"],
+  "keywords": [
+    "cost",
+    "tokens",
+    "hooks",
+    "context",
+    "instrumentation"
+  ],
   "userConfig": {
     "python": {
       "type": "string",
       "description": "Python 3.11+ interpreter name. Linux and macOS: python3. Windows: py (or python).",
-      "default": "python3"
+      "default": "python3",
+      "title": "Python interpreter"
     }
   }
 }
