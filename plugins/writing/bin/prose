@@ -24,12 +24,17 @@ PLUGIN = Path(__file__).resolve().parent.parent
 ENGINE = PLUGIN / "lib" / "prose_impl.py"
 REQUIREMENTS = PLUGIN / "requirements.txt"
 
-# Two candidate venvs: beside the plugin first, then the user cache. A plugin
-# installed into the read-only cache cannot create the first, so the second is
-# not a fallback so much as the normal case on an installed plugin.
+# The user cache comes FIRST, and that order is the whole point. An installed
+# plugin lives at .../writing/<version>/, so a venv created beside it is
+# destroyed by the next `claude plugin update` and has to be rebuilt every
+# release. One venv outside the version tree is shared by every version, and
+# the requirements almost never change.
+#
+# The plugin-local path stays as a second choice for a dev checkout that
+# already has one, so an existing `.venv` is still found rather than ignored.
 VENVS = [
-    PLUGIN / ".venv",
     Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "claude-kit" / "prose",
+    PLUGIN / ".venv",
 ]
 
 

@@ -33,6 +33,7 @@ import datetime
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -210,6 +211,11 @@ _SLEEP_CALL = re.compile(r"(?:^|[;&|(]|&&|\|\||\bdo\b|\bthen\b)\s*u?sleep\b")
 _WATCH = re.compile(r"(?:^|[;&|]|&&)\s*watch\s+")
 # The escape must be an assignment, not the word appearing inside a string.
 _ALLOW_POLL = re.compile(r"(?:^|[;&|]|&&)\s*ALLOW_POLL=1\b")
+# A program whose whole job is to run something many times. With a sleep at a
+# command position that IS a polling loop, with or without `do`/`done`.
+_REPEATER = re.compile(r"(?:^|[;&|]|&&)\s*(?:xargs|parallel)\b")
+# `sh -c` hides an entire loop inside one quoted argument.
+_SHELL_C = re.compile(r"\b(?:ba|z|k|a)?sh\b[^\n]*?\s-c(?:\s|$)")
 # An interpreter heredoc. `[^\n;&|]*` keeps the interpreter and the `<<` in one
 # command, so `python3 -c '...' && cat > f <<EOF` is not a match. The delimiter
 # is captured and must also appear alone on a later line, which is what
@@ -219,6 +225,28 @@ _HEREDOC = re.compile(
     r"[^\n;&|]*<<-?\s*[\'\"]?(\w+)[\'\"]?\s*$",
     re.M,
 )
+
+
+def shell_fragments(command: str):
+    """The command, plus every string it hands to `sh -c`.
+
+    A polling loop hides easily: `xargs -I{} sh -c 'sleep 2; test -f out'` has
+    no `do`/`done` anywhere at the top level. Widening the outer regex to reach
+    inside the quotes is what produced false positives on ordinary commands, so
+    this parses the quoting instead of pattern-matching it, and the unchanged
+    rules then apply to what comes out.
+    """
+    yield command
+    if not _SHELL_C.search(command):
+        return
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        # Unbalanced quotes. Not parseable, so there is nothing to look inside.
+        return
+    for index, token in enumerate(tokens):
+        if token == "-c" and index + 1 < len(tokens):
+            yield tokens[index + 1]
 
 
 def hook_bash() -> None:
@@ -242,8 +270,16 @@ def hook_bash() -> None:
     if not command:
         return
 
-    polling = bool(_WATCH.search(command)) or any(
-        _SLEEP_CALL.search(body) for body in _LOOP_BODY.findall(command)
+    fragments = list(shell_fragments(command))
+    sleeps = any(_SLEEP_CALL.search(fragment) for fragment in fragments)
+    polling = (
+        any(_WATCH.search(fragment) for fragment in fragments)
+        or any(
+            _SLEEP_CALL.search(body)
+            for fragment in fragments
+            for body in _LOOP_BODY.findall(fragment)
+        )
+        or (any(_REPEATER.search(fragment) for fragment in fragments) and sleeps)
     )
     if polling and not _ALLOW_POLL.search(command):
         deny(

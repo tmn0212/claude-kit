@@ -414,6 +414,27 @@ def main() -> int:
         {"tool_input": {"command": "ALLOW_POLL=1 until [ -s o ]; do sleep 1; done"}}))
     check("a real ALLOW_POLL=1 assignment escapes", escape.stdout.strip() == "", escape.stdout)
 
+    # A loop hidden inside `sh -c` has no do/done at the top level, and a
+    # repeater is a loop with the loop moved into another program.
+    nested = [
+        "seq 100 | xargs -I{} sh -c 'sleep 2; test -f out'",
+        "sh -c 'until [ -f out ]; do sleep 1; done'",
+        "find . -name '*.o' | xargs -n1 sh -c 'sleep 1; rm \"$0\"'",
+    ]
+    for command in nested:
+        got = run(guard, ["bash"], root, stdin=json.dumps({"tool_input": {"command": command}}))
+        check(f"nested poll denied: {command[:40]}", '"deny"' in got.stdout, got.stdout)
+
+    not_nested = [
+        "find . -name '*.tmp' | xargs rm",
+        "ls | xargs grep -l sleep",
+        "cat list | xargs -n1 sh -c 'echo \"$0\"'",
+    ]
+    for command in not_nested:
+        got = run(guard, ["bash"], root, stdin=json.dumps({"tool_input": {"command": command}}))
+        check(f"repeater without a sleep allowed: {command[:36]}", got.stdout.strip() == "",
+              got.stdout)
+
     # The heredoc guard fired on a left-shift and on a cat heredoc beside python.
     shift = "python3 tool.py --shift '1<<20'\n" + "# pad\n" * 40
     got = run(guard, ["bash"], root, stdin=json.dumps({"tool_input": {"command": shift}}))
