@@ -179,7 +179,8 @@ in essence, it's important to understand.
 Bold at most a dozen spans in an answer. Bold on everything is emphasis on
 nothing. Use a heading to make something stand out, not bold text.
 
-No emoji. No em-dashes; use a comma, a colon, or a full stop.
+No emoji. No em-dashes, en-dashes or middots; use a comma, a colon, or a full
+stop. This holds in every sentence you write, code and quoted output aside.
 
 Do not publish an artifact unless asked for one.
 

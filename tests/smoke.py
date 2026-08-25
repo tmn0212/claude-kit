@@ -655,6 +655,29 @@ def main() -> int:
         # Six terminator-free bullets used to measure as one long sentence.
         bullets = prose_impl.strip_md("- one\n- two\n- three\n")
         check("a list item ends a sentence", bullets.count(".") >= 3, repr(bullets))
+
+        # The typography ban is stated in three files that have to agree: the
+        # metric here, the Vale rule for the machines that have Vale, and the
+        # output style that stops one being typed at all. Three copies of a
+        # rule is three chances for one to drift, so the agreement is asserted.
+        banned = set("".join(prose_impl.TYPOGRAPHY.values()))
+        check("prose bans em-dash, en-dash and middot",
+              banned == set("—–·"), "".join(sorted(banned)))
+        vale_rule = (PLUGINS / "writing" / "vale" / "styles" / "Minh" / "Emdash.yml").read_text(
+            encoding="utf-8")
+        check("the Vale rule bans the same three",
+              all(c in vale_rule for c in banned), vale_rule)
+        style = (PLUGINS / "writing" / "output-styles" / "answer-first.md").read_text(
+            encoding="utf-8")
+        check("the output style states the ban",
+              "em-dash" in style and "middot" in style, "")
+
+        # A dash inside a code sample is data. Failing a document that merely
+        # *shows* the rule is how a check earns itself switched off.
+        kept = prose_impl.without_code(
+            "a — b\n\n```\nc — d\n```\n\n`e — f`\n")
+        check("without_code keeps prose dashes and drops code ones",
+              kept.count("—") == 1, repr(kept))
     except Exception as exc:  # pragma: no cover
         check("prose stripper importable", False, str(exc))
 

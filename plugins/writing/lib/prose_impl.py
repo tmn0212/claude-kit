@@ -56,6 +56,25 @@ PREAMBLE = re.compile(
 LATEX = re.compile(r"\\\(|\\\[|\$\$|\\frac|\\sum|\\int")
 BOX = set("┌┐└┘├┤┬┴┼─│╭╮╰╯━┃╔╗╚╝║═▲▼◀▶←→↑↓")
 
+# The house rule bans the em-dash, the en-dash and the middot outright: use a
+# comma, a colon, a full stop, or start a new sentence. Vale says the same in
+# styles/Minh/Emdash.yml, but Vale is optional and usually absent, so the rule
+# has to be measurable here too or it is only advice.
+TYPOGRAPHY = {"em/en dashes": "—–", "middots": "·"}
+
+
+def without_code(t):
+    """Drop fenced and inline code, keeping tables and ordinary prose.
+
+    A dash inside a code sample is data, not writing, and a check that fails on
+    a document *describing* the rule is one people switch off. Tables are kept
+    deliberately: `strip_md` drops them for sentence metrics, but a middot in a
+    table cell is still a middot in the prose.
+    """
+    t = re.sub(r"<!--\s*vale off\s*-->.*?<!--\s*vale on\s*-->", " ", t, flags=re.S | re.I)
+    t = re.sub(r"```.*?```", " ", t, flags=re.S)
+    return re.sub(r"`[^`]*`", " ", t)
+
 
 def read(arg):
     if arg == "-":
@@ -156,7 +175,11 @@ def score(raw):
     naked = [b for b in bs if not b.rstrip().endswith((".", ":", "?", "!"))
              and len(b.split()) > 14]
     body = raw.lstrip("#").lstrip()
+    prose_only = without_code(raw)
+    banned = {k: sum(prose_only.count(c) for c in chars) for k, chars in TYPOGRAPHY.items()}
     return {
+        "dashes": banned["em/en dashes"],
+        "middots": banned["middots"],
         "words": len(raw.split()),
         "sentences": len(ss),
         "fk": round(textstat.flesch_kincaid_grade(t), 1) if ss else 0.0,
@@ -206,6 +229,8 @@ def report(s, name="text"):
     row("latex spans", "latex", 0)
     row("filler phrases", "filler", 0)
     row("preamble opening", "preamble", 0)
+    row("em/en dashes", "dashes", 0)
+    row("middots", "middots", 0)
     for b in s["_dense"]:
         print(f"    dense bullet ({clause_count(b)} facts): {b[:90]}")
     for b in s["_naked"]:
@@ -333,7 +358,8 @@ def baseline(d):
     print()
     for label, key in [("with a table", "tables"), ("with a diagram", "diagrams"),
                        ("with mermaid", "mermaid"), ("with filler", "filler"),
-                       ("preamble opening", "preamble")]:
+                       ("preamble opening", "preamble"),
+                       ("with an em/en dash", "dashes"), ("with a middot", "middots")]:
         print(f"  {label:<22}{100*sum(1 for r in rows if r[key])/n:5.1f}%")
 
 
