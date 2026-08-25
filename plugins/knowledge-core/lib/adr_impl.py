@@ -1,0 +1,392 @@
+"""Architecture decision records: create, list, transition, index, validate.
+
+Everything here is deterministic - next free number, template copy, status
+transitions, index generation - which is exactly why it is a script and not a
+thing a session works out by reading nine files.
+
+The idea worth keeping: an OPEN QUESTION is an ADR with `status: proposed`.
+Same file, same template, filled in as far as the evidence goes, with the
+decision left as the question. Accepting it later is a one-line status change
+rather than a rewrite, and `adr open` is the register.
+
+`ADR OK` on stdout is the success signal. Grep for the line, not exit code 0.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime
+import re
+import sys
+from pathlib import Path
+
+from kit_config import Config
+
+TEMPLATE_NAME = "0000-template.md"
+FILE_RE = re.compile(r"^(\d{4})-.+\.md$")
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+# Emit order matters: a reader scans the top of the file, not an alphabetised map.
+KEYS = ["id", "status", "date", "title", "supersedes", "superseded_by", "applies_to"]
+
+TEMPLATE_BODY = """## Context
+
+What is true that forces a decision. Evidence, measurements, constraints.
+
+## Options
+
+### A. <name>
+
+### B. <name>
+
+## Decision
+
+The option taken, in one sentence.
+
+## Consequences
+
+What this makes easy, what it makes hard, and what it forecloses.
+"""
+
+
+class AdrError(Exception):
+    pass
+
+
+# --- front matter ---------------------------------------------------------
+# Flat `key: value` pairs between the leading and closing `---`. Deliberately
+# not full YAML: the format is ours, one line per key. Unlike the awk original,
+# this reads a block list, so `applies_to` written across several lines works.
+
+
+def fm_read(path: Path) -> dict:
+    meta: dict = {}
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    if not lines or lines[0].strip() != "---":
+        return meta
+    key = None
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        if line.lstrip().startswith("- ") and key:
+            meta.setdefault(key + "__list", []).append(line.lstrip()[2:].strip())
+            continue
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        key = key.strip()
+        meta[key] = value.strip()
+    for key in [k for k in meta if k.endswith("__list")]:
+        base = key[: -len("__list")]
+        if not meta.get(base):
+            meta[base] = meta[key]
+        del meta[key]
+    return meta
+
+
+def fm_write(path: Path, key: str, value: str) -> None:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        raise AdrError(f"{path.name}: no front matter to edit")
+    out, inside, done = [], True, False
+    out.append(lines[0])
+    for line in lines[1:]:
+        if inside and line.strip() == "---":
+            if not done:
+                out.append(f"{key}: {value}\n")
+                done = True
+            inside = False
+            out.append(line)
+            continue
+        if inside and ":" in line and line.partition(":")[0].strip() == key:
+            out.append(f"{key}: {value}\n")
+            done = True
+            continue
+        out.append(line)
+    path.write_text("".join(out), encoding="utf-8")
+
+
+# --- helpers --------------------------------------------------------------
+
+
+def adr_dir(cfg: Config) -> Path:
+    return cfg.path("adr.dir")
+
+
+def adr_files(cfg: Config) -> list[Path]:
+    directory = adr_dir(cfg)
+    if not directory.is_dir():
+        return []
+    found = [p for p in directory.iterdir() if FILE_RE.match(p.name) and not p.name.startswith("0000-")]
+    return sorted(found, key=lambda p: p.name)
+
+
+def find_adr(cfg: Config, ident: str) -> Path:
+    try:
+        number = f"{int(str(ident).lstrip('0') or '0'):04d}"
+    except ValueError as exc:
+        raise AdrError(f"not a number: {ident}") from exc
+    for path in adr_files(cfg):
+        if path.name.startswith(number + "-"):
+            return path
+    raise AdrError(f"no ADR {number} in {adr_dir(cfg)}")
+
+
+def slugify(title: str) -> str:
+    """Truncate on a word boundary.
+
+    Cutting at a fixed column produces filenames that end mid-word, which then
+    read as typos in a directory listing.
+    """
+    words = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-").split("-")
+    slug = ""
+    for word in words:
+        candidate = word if not slug else f"{slug}-{word}"
+        if len(candidate) > 45 and slug:
+            break
+        slug = candidate
+    return slug[:50]
+
+
+def meta_of(path: Path) -> dict:
+    meta = fm_read(path)
+    meta.setdefault("id", path.name[:4])
+    meta.setdefault("status", "?")
+    meta.setdefault("title", path.stem[5:])
+    return meta
+
+
+# --- commands -------------------------------------------------------------
+
+
+def cmd_new(cfg: Config, title: str) -> int:
+    directory = adr_dir(cfg)
+    directory.mkdir(parents=True, exist_ok=True)
+    highest = 0
+    for path in adr_files(cfg):
+        highest = max(highest, int(path.name[:4]))
+    ident = f"{highest + 1:04d}"
+
+    slug = slugify(title)
+    if not slug:
+        raise AdrError(f"title produced an empty slug: {title}")
+    target = directory / f"{ident}-{slug}.md"
+    if target.exists():
+        raise AdrError(f"already exists: {target}")
+
+    template = directory / TEMPLATE_NAME
+    if template.is_file():
+        text = template.read_text(encoding="utf-8", errors="replace")
+        marker = text.find("\n## ")
+        body = text[marker + 1 :] if marker >= 0 else TEMPLATE_BODY
+    else:
+        body = TEMPLATE_BODY
+
+    today = datetime.date.today().isoformat()
+    head = ["---"]
+    head.append(f"id: {ident}")
+    head.append("status: proposed")
+    head.append(f"date: {today}")
+    head.append(f"title: {title}")
+    head.append("supersedes:")
+    head.append("superseded_by:")
+    head.append("applies_to:")
+    head.append("---")
+    head.append("")
+    head.append(f"# ADR {ident} - {title}")
+    head.append("")
+    target.write_text("\n".join(head) + "\n" + body, encoding="utf-8")
+
+    print(target)
+    print(f"  status: proposed  (an open question until `adr accept {ident}`)")
+    print("ADR OK")
+    return 0
+
+
+def cmd_list(cfg: Config, want: str | None) -> int:
+    print(f"{'ID':<6} {'STATUS':<10} {'DATE':<12} TITLE")
+    shown = 0
+    for path in adr_files(cfg):
+        meta = meta_of(path)
+        if want and meta["status"] != want:
+            continue
+        print(
+            f"{meta['id']:<6} {meta['status']:<10} "
+            f"{meta.get('date') or '-':<12} {meta['title']}"
+        )
+        shown += 1
+    if shown == 0:
+        print("(none)")
+    print("ADR OK")
+    return 0
+
+
+def cmd_index(cfg: Config, quiet: bool = False) -> int:
+    directory = adr_dir(cfg)
+    directory.mkdir(parents=True, exist_ok=True)
+    out = directory / "README.md"
+    lines = [
+        "# Decision records",
+        "",
+        "Generated by `adr index`. Do not edit by hand.",
+        "",
+        "One decision per file, immutable once accepted. Changing a decision means a",
+        "new record that supersedes the old one, so the reasoning that was true at the",
+        "time survives. `proposed` is this project's open-questions register.",
+        "",
+        "| ID | Status | Date | Decision |",
+        "|---|---|---|---|",
+    ]
+    for path in adr_files(cfg):
+        meta = meta_of(path)
+        lines.append(
+            f"| [{meta['id']}]({path.name}) | {meta['status']} | "
+            f"{meta.get('date') or '-'} | {meta['title']} |"
+        )
+    lines += [
+        "",
+        "Chronology is free from git and is not duplicated here:",
+        "",
+        "```bash",
+        f"git log --diff-filter=A --format='%ad %s' --date=short -- {cfg.get('adr.dir')}/",
+        "```",
+        "",
+    ]
+    out.write_text("\n".join(lines), encoding="utf-8")
+    if not quiet:
+        print(f"wrote {out}")
+        print("ADR OK")
+    return 0
+
+
+def cmd_transition(cfg: Config, ident: str, want_from: str, want_to: str) -> int:
+    path = find_adr(cfg, ident)
+    current = fm_read(path).get("status", "")
+    if current != want_from:
+        raise AdrError(f"{path.name} is '{current}', not '{want_from}'")
+    fm_write(path, "status", want_to)
+    print(f"{path.name}: {want_from} -> {want_to}")
+    cmd_index(cfg, quiet=True)
+    print("ADR OK")
+    return 0
+
+
+def cmd_supersede(cfg: Config, old_ident: str, new_ident: str) -> int:
+    old = find_adr(cfg, old_ident)
+    new = find_adr(cfg, new_ident)
+    if old == new:
+        raise AdrError("an ADR cannot supersede itself")
+    fm_write(old, "status", "superseded")
+    fm_write(old, "superseded_by", new.name[:4])
+    fm_write(new, "supersedes", old.name[:4])
+    print(f"{old.name} superseded by {new.name}")
+    print("  the superseded record keeps its text: it was true when it was written")
+    cmd_index(cfg, quiet=True)
+    print("ADR OK")
+    return 0
+
+
+def cmd_check(cfg: Config) -> int:
+    valid = cfg.get("adr.statuses", [])
+    problems = 0
+    for path in adr_files(cfg):
+        meta = fm_read(path)
+        name_id = path.name[:4]
+        if not meta.get("id"):
+            print(f"  {path}: no front matter")
+            problems += 1
+            continue
+        if meta["id"] != name_id:
+            print(f"  {path}: front-matter id '{meta['id']}' does not match filename '{name_id}'")
+            problems += 1
+        if meta.get("status") not in valid:
+            print(f"  {path}: status '{meta.get('status')}' is not one of: {', '.join(valid)}")
+            problems += 1
+        if not meta.get("title"):
+            print(f"  {path}: empty title")
+            problems += 1
+        if not DATE_RE.match(str(meta.get("date", ""))):
+            print(f"  {path}: date '{meta.get('date')}' is not YYYY-MM-DD")
+            problems += 1
+        superseded_by = meta.get("superseded_by")
+        if superseded_by and meta.get("status") != "superseded":
+            print(f"  {path}: superseded_by is set but status is '{meta.get('status')}'")
+            problems += 1
+        if meta.get("status") == "superseded" and not superseded_by:
+            print(f"  {path}: status superseded but superseded_by is empty")
+            problems += 1
+    if problems:
+        print(f"ADR CHECK FAILED ({problems} problem(s))")
+        return 1
+    print("ADR OK")
+    return 0
+
+
+def cmd_template(cfg: Config) -> int:
+    directory = adr_dir(cfg)
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / TEMPLATE_NAME
+    if target.exists():
+        print(f"{target} already exists")
+        print("ADR OK")
+        return 0
+    head = "---\n" + "\n".join(f"{k}:" for k in KEYS) + "\n---\n\n"
+    target.write_text(head + "# ADR NNNN - Title\n\n" + TEMPLATE_BODY, encoding="utf-8")
+    print(f"wrote {target}")
+    print("ADR OK")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="adr",
+        description="Architecture decision records. `proposed` is the open-questions register.",
+    )
+    sub = parser.add_subparsers(dest="command")
+    new = sub.add_parser("new", help="scaffold the next record")
+    new.add_argument("title", nargs="+")
+    listing = sub.add_parser("list", help="one line per record")
+    listing.add_argument("--status", default=None)
+    sub.add_parser("open", help="only status: proposed")
+    for name, helptext in [("accept", "proposed -> accepted"), ("reject", "proposed -> rejected")]:
+        node = sub.add_parser(name, help=helptext)
+        node.add_argument("id")
+    sup = sub.add_parser("supersede", help="OLD superseded by NEW")
+    sup.add_argument("old")
+    sup.add_argument("new")
+    sub.add_parser("index", help="regenerate the README index")
+    sub.add_parser("check", help="validate front matter (CI gate)")
+    sub.add_parser("template", help="write the record template if absent")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    cfg = Config.load()
+    try:
+        command = args.command or "list"
+        if command == "new":
+            return cmd_new(cfg, " ".join(args.title))
+        if command == "list":
+            return cmd_list(cfg, args.status)
+        if command == "open":
+            return cmd_list(cfg, "proposed")
+        if command == "accept":
+            return cmd_transition(cfg, args.id, "proposed", "accepted")
+        if command == "reject":
+            return cmd_transition(cfg, args.id, "proposed", "rejected")
+        if command == "supersede":
+            return cmd_supersede(cfg, args.old, args.new)
+        if command == "index":
+            return cmd_index(cfg)
+        if command == "check":
+            return cmd_check(cfg)
+        if command == "template":
+            return cmd_template(cfg)
+    except AdrError as exc:
+        sys.stderr.write(f"adr: {exc}\n")
+        return 1
+    parser.print_help()
+    return 1

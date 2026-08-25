@@ -1,0 +1,17 @@
+# Derived and disposable. `kb build` reconstructs the index from the markdown,
+# which stays authoritative.
+.kb.sqlite
+.kb.sqlite.building
+.kb.sqlite*-journal
+
+# Created on demand by `prose --setup`.
+.venv/
+__pycache__/
+*.pyc
+
+# Written by the friction and depth hooks.
+log/
+
+# Backups the installer leaves behind.
+*.bak
+*.bak-*

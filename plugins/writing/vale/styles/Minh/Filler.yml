@@ -1,0 +1,20 @@
+extends: existence
+message: "Filler: '%s'. Delete it; the sentence works without it."
+level: error
+ignorecase: true
+tokens:
+  - it's worth noting
+  - it is worth noting
+  - essentially
+  - fundamentally
+  - in essence
+  - it's important to (understand|note|remember)
+  - it is important to (understand|note|remember)
+  - needless to say
+  - as you can see
+  - at the end of the day
+  - simply put
+  - in other words
+  - that being said
+  - suffice it to say
+  - the fact of the matter is

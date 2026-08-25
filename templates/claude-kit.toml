@@ -1,0 +1,99 @@
+# claude-kit configuration.
+#
+# Copy this to the root of a project as `claude-kit.toml` and delete what you do
+# not need. Every key below has a default, so an empty file, or no file at all,
+# still works. What this buys you is the same tools reading your directory names
+# instead of somebody else's.
+#
+# The tools find this by walking up from the working directory, then falling
+# back to the nearest `.git`. A monorepo can put one beside each sub-package.
+
+[project]
+# Defaults to the root directory name.
+name = "my-project"
+
+
+[kb]
+# The trees `kb` indexes, relative to the project root. Order does not matter;
+# a nested source wins over its parent, so overlapping trees are safe.
+sources = ["docs", "notes", "decisions"]
+
+# Only these extensions are indexed. Add ".qmd" for a Quarto book, ".rst" for
+# Sphinx, ".txt" for plain notes.
+extensions = [".md", ".markdown", ".txt"]
+
+# Pruned during the walk rather than filtered after it, so a vendored tree
+# cannot bury the documents that are actually yours.
+skip_dirs = [".git", ".venv", "node_modules", "__pycache__", "_out", "build", "dist", "target", "vendor"]
+
+# Stems that say nothing about their content, so the directory has to. Without
+# this, four different README.md files all answer to the subject "readme" and
+# `kb section` cannot address any of them.
+generic_stems = ["readme", "index", "overview"]
+
+# Which trees `kb why` treats as the evidence a decision rests on. Leave this
+# out and it means every source except the decisions directory.
+# evidence_dirs = ["notes", "docs/measurements"]
+
+[kb.aliases]
+# Query rewrites, expanded at search time. Full-text search cannot match a word
+# to its synonym, and the industry answer, a vector index alongside it, is not
+# worth it for a few hundred documents. Twenty lines of aliases recover most of
+# the same recall, cost nothing, and unlike an embedding you can read this table
+# and correct it when it is wrong.
+#
+# Keep it to terms YOUR project uses under more than one name. A thesaurus makes
+# every query match everything.
+#
+# auth = ["authentication", "login", "oauth"]
+# db = ["database", "postgres", "sql"]
+
+
+[adr]
+# Decision records. `proposed` is the open-questions register: an open question
+# is a record filled in as far as the evidence goes, with the decision left as
+# the question. Accepting it later is a one-line status change, not a rewrite.
+dir = "docs/decisions"
+statuses = ["proposed", "accepted", "rejected", "superseded"]
+
+
+[promote]
+# A throwaway script goes in `scratch`, and `promote` moves it to `dest` with
+# the executable bit, a shebang, and a row in the registry document. This exists
+# because of the economics: doing it properly by hand cost fifteen minutes and
+# doing nothing cost zero, so nothing is what happened.
+scratch = "tools/scratch"
+dest = "tools"
+# Set to "" to skip the registration step.
+registry = "docs/guides/tooling.md"
+
+
+[economics]
+# Programs that do nothing on their own, so the subcommand is the real identity.
+# These are ADDED to a sensible built-in list; name the ones specific to your
+# stack, such as a build wrapper or a vendor CLI.
+multiplexers = []
+
+# Seconds of harness overhead one tool call costs. Measured on one machine, so
+# treat it as a starting point rather than a fact about yours.
+penalty_seconds = 1.85
+
+# Directories a bare relative path is likely rooted at. A failure naming one of
+# these is usually a directory change that broke every path after it.
+root_relative_dirs = ["tools", "docs", "src", "tests"]
+
+
+[guards]
+# The hooks that refuse the expensive shapes. Set false to disable all of them.
+enabled = true
+
+# A Read larger than this, of a document inside `kb.sources`, is refused with
+# the cheaper `kb` call named instead. Roughly 24000 bytes is 6k tokens.
+read_bytes = 24000
+
+# Context sizes, in thousands of tokens, at which to warn once.
+depth_tiers = [300, 500, 700]
+
+# An inline interpreter heredoc longer than this is refused. Short ones pass: a
+# three-line one-liner is cheaper than creating a file.
+heredoc_lines = 25

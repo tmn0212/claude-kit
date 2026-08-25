@@ -1,0 +1,6 @@
+extends: existence
+message: "Restating the question: '%s'. Answer it instead."
+level: warning
+ignorecase: true
+raw:
+  - '(?m)^\s*(?:You(?:''re| are) asking|Your question is|To answer your question|The question of whether|As for (?:your|the) question)'

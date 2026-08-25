@@ -1,0 +1,4 @@
+# The prose engine's dependencies. Nothing here is optional; vale is, and it is
+# a separate binary rather than a python package (https://vale.sh).
+textstat>=0.7
+plotext>=5.2

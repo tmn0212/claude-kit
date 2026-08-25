@@ -1,0 +1,19 @@
+# Windows plugin breakage traces to CRLF arriving from `git clone` and turning
+# every `#!/usr/bin/env python3` into an unrunnable `...python3\r`. Three closed
+# upstream issues say exactly that. This is the cheapest fix there is, and it
+# has to be committed before anyone clones on Windows.
+* text=auto eol=lf
+
+*.sh   text eol=lf
+*.py   text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.yml  text eol=lf
+
+# The two that Windows actually runs, and that Windows shells expect CRLF in.
+*.ps1  text eol=crlf
+*.cmd  text eol=crlf
+
+*.png binary
+*.jpg binary

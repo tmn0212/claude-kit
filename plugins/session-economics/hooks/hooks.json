@@ -1,0 +1,85 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${user_config.python}",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/guard.py", "session-start"],
+            "timeout": 25,
+            "statusMessage": "reading the project brief"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${user_config.python}",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/guard.py", "depth"],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${user_config.python}",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/guard.py", "read"],
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${user_config.python}",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/guard.py", "bash"],
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "${user_config.python}",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/guard.py", "friction-pre"],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${user_config.python}",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/guard.py", "friction-post"],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${user_config.python}",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/guard.py", "friction-fail"],
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

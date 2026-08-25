@@ -1,0 +1,6 @@
+extends: existence
+message: "Preamble: '%s'. Start with the answer instead."
+level: error
+ignorecase: true
+raw:
+  - '(?m)^\s*(?:Great question|Sure[,!.]|Certainly|Absolutely|Of course|Happy to|You(?:''re| are) (?:right|absolutely right)|I(?:''ll| will) (?:go ahead|now|start)|Let me (?:start|begin|explain)|Here(?:''s| is) (?:what|the|a) )'

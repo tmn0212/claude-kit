@@ -1,0 +1,30 @@
+{
+  "name": "claude-kit",
+  "owner": { "name": "Minh Nguyen", "url": "https://github.com/tmn0212" },
+  "metadata": {
+    "description": "A project template for working with Claude Code: an indexed knowledge base, decision records, session cost instrumentation, writing control, and tiered subagents.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "knowledge-core",
+      "source": "./plugins/knowledge-core",
+      "description": "An indexed, queryable knowledge base over a project's own documents, plus decision records whose `proposed` state is the open-questions register."
+    },
+    {
+      "name": "session-economics",
+      "source": "./plugins/session-economics",
+      "description": "Measures where sessions burn tokens and wall-clock time, and installs the guards that stop them doing it again."
+    },
+    {
+      "name": "writing",
+      "source": "./plugins/writing",
+      "description": "The Answer-first output style, plus a tool that measures writing against a baseline instead of guessing at it."
+    },
+    {
+      "name": "agent-tiers",
+      "source": "./plugins/agent-tiers",
+      "description": "Paired thorough and cheap subagents with one output contract, plus the prompt-shaper skill."
+    }
+  ]
+}

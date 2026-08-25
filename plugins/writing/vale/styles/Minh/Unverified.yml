@@ -1,0 +1,6 @@
+extends: existence
+message: "Verification claim: '%s'. Say what you ran, or label it assumed."
+level: suggestion
+ignorecase: true
+raw:
+  - '(?i)\b(?:verified|confirmed|validated|double-?checked)\b'

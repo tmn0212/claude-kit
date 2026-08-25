@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${user_config.python}",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/prompt_shaper.py"],
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
