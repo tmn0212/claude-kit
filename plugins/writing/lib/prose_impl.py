@@ -278,7 +278,10 @@ def default_dir():
     # backslash in the class is what makes this work on Windows, where the
     # working directory contains no forward slashes at all.
     cwd = re.sub(r"[/\\_]", "-", os.getcwd())
-    return os.path.expanduser(f"~/.claude/projects/{cwd}")
+    # Honour CLAUDE_CONFIG_DIR the way the installer does: a user who moved
+    # their config directory has no transcripts under ~/.claude at all.
+    base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+    return os.path.join(base, "projects", cwd)
 
 
 def baseline(d):

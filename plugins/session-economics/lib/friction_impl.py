@@ -121,7 +121,7 @@ def load(since_days=None):
     if since_days:
         cutoff = time.time() - since_days * 86400
     out = []
-    for line in LOG.read_text(errors="replace").splitlines():
+    for line in LOG.read_text(encoding="utf-8", errors="replace").splitlines():
         line = line.strip()
         if not line:
             continue
@@ -253,7 +253,7 @@ def prune(keep_days, max_records):
     if not LOG.exists():
         return 0, 0
 
-    lines = [ln for ln in LOG.read_text(errors="replace").splitlines() if ln.strip()]
+    lines = [ln for ln in LOG.read_text(encoding="utf-8", errors="replace").splitlines() if ln.strip()]
     total = len(lines)
     cutoff = time.time() - keep_days * 86400
 

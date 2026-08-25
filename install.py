@@ -27,6 +27,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 MARKETPLACE = "tmn0212/claude-kit"
 PLUGINS = ["knowledge-core", "session-economics", "writing", "agent-tiers"]
+# Plugins with no hooks declare no userConfig, so --config is a no-op there.
+NO_USER_CONFIG = {"writing"}
 
 
 def claude_dir() -> Path:
@@ -147,7 +149,10 @@ def main() -> int:
     interpreter = "py" if os.name == "nt" else "python3"
     print(f"  claude plugin marketplace add {MARKETPLACE}")
     for name in PLUGINS:
-        print(f"  claude plugin install {name}@claude-kit --scope user --config python={interpreter}")
+        # `writing` ships no hooks, so it declares no userConfig and passing
+        # --config to it earns a warning rather than doing anything.
+        config = "" if name in NO_USER_CONFIG else f" --config python={interpreter}"
+        print(f"  claude plugin install {name}@claude-kit --scope user{config}")
     print()
     print(f"The `python` option is set to `{interpreter}` above because that is what")
     print("this platform has. Change it later with `/plugin configure <plugin>`.")

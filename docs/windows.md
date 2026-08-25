@@ -45,9 +45,11 @@ If you fork this repo, keep that file.
 
 A plugin's `bin/` joins the Bash tool's PATH while the plugin is enabled. On
 POSIX a shebang script is directly executable, so `kb` works as-is. Windows PATH
-resolution needs a real executable, so every tool also ships a `.cmd` twin that
-calls `python`. If your Windows Python is `py` rather than `python`, edit those
-four `.cmd` files or put a `python` shim on PATH.
+resolution needs a real executable, so all seven tools also ship a `.cmd` twin.
+
+Those twins pick their own interpreter: `py` when `where py` finds it, else
+`python`. They do NOT read the plugin's `python` option, because `userConfig`
+substitution reaches `hooks.json` and nothing else.
 
 ## What does not run natively
 

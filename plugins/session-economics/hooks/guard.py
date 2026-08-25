@@ -341,10 +341,35 @@ def hook_depth() -> None:
 # --- 4 and 5. friction recorder -------------------------------------------
 
 
+LOG_GITIGNORE = """# Written by claude-kit's hooks. NEVER COMMIT THIS.
+#
+# commands.jsonl records the first 400 characters of every Bash command run in
+# this project, and 200 characters of any error. That routinely captures tokens
+# passed on a command line, Authorization headers, and absolute home paths.
+*
+"""
+
+
 def friction_dir(cfg) -> Path | None:
+    """The log directory, created with a self-ignoring .gitignore.
+
+    The log holds every command a session ran, which is exactly the kind of
+    thing a routine `git add -A` sweeps up. Writing the ignore file at the same
+    moment the directory appears is the only point at which nobody has to
+    remember anything.
+    """
     if cfg is None or not enabled(cfg):
         return None
-    return cfg.root / "log" / "friction"
+    directory = cfg.root / "log" / "friction"
+    try:
+        if not directory.exists():
+            directory.mkdir(parents=True, exist_ok=True)
+            (cfg.root / "log" / ".gitignore").write_text(
+                LOG_GITIGNORE, encoding="utf-8", newline="\n"
+            )
+    except OSError:
+        return None
+    return directory
 
 
 def hook_friction_pre() -> None:
@@ -479,4 +504,14 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # Not sys.exit. A deferred stdout flush at interpreter shutdown can hit
+    # EPIPE, and CPython rewrites the status to 120 - which the harness reads
+    # as a hook failure, breaking the fail-open promise at rule 1. Flush by
+    # hand, swallow the error, and leave through a door that cannot be
+    # rewritten. prompt_shaper.py in the agent-tiers plugin found this first.
+    main()
+    try:
+        sys.stdout.flush()
+    except Exception:
+        pass
+    os._exit(0)

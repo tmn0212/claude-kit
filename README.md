@@ -104,6 +104,12 @@ The hooks are the enforcement half. Without them the knowledge base is advice.
 Every one fails open. Any error, any unparsable payload, and the tool call
 proceeds as normal.
 
+**The friction log holds every command you run.** `log/friction/commands.jsonl`
+records the first 400 characters of each Bash call, which routinely catches
+tokens passed on a command line and absolute home paths. The plugin writes
+`log/.gitignore` the moment it creates that directory, so it excludes itself
+before a `git add -A` can reach it. Do not remove that file.
+
 ### writing
 
 The **Answer first** output style, and `prose`, which measures a piece of

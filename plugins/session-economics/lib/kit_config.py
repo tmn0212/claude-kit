@@ -16,6 +16,7 @@ Requires Python 3.11 or newer for `tomllib`, which is stdlib.
 
 from __future__ import annotations
 
+import copy
 import os
 import sys
 from pathlib import Path
@@ -143,7 +144,10 @@ class Config:
     def load(cls, start=None) -> "Config":
         root = find_root(start)
         path = root / CONFIG_NAME
-        data = DEFAULTS
+        # A copy, not the module dict. Handing out DEFAULTS itself means a
+        # caller that mutates cfg.data silently changes the defaults for
+        # every later load in the same process.
+        data = copy.deepcopy(DEFAULTS)
         if path.is_file():
             if tomllib is None:
                 sys.stderr.write(

@@ -53,10 +53,13 @@ def ensure_shebang(path: Path) -> bool:
     suffix = path.suffix
     if suffix not in SHEBANGS:
         return False
-    text = path.read_text(encoding="utf-8", errors="replace")
-    if text.startswith("#!"):
+    # Bytes, not text. Reading with errors="replace" and writing the result back
+    # turns every undecodable byte into U+FFFD permanently, and the move has
+    # already happened, so there is no original left to recover from.
+    raw = path.read_bytes()
+    if raw.startswith(b"#!"):
         return False
-    path.write_text(SHEBANGS[suffix] + "\n" + text, encoding="utf-8")
+    path.write_bytes(SHEBANGS[suffix].encode("utf-8") + b"\n" + raw)
     return True
 
 
@@ -78,7 +81,7 @@ def register(doc: Path, name: str, dest_dir: str) -> bool:
     if last is None:
         return False
     lines.insert(last + 1, row)
-    doc.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    doc.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
     return True
 
 

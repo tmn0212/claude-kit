@@ -1,11 +1,19 @@
 {
   "name": "writing",
   "displayName": "Writing control",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "The Answer-first output style, plus a tool that measures a piece of writing against a baseline instead of guessing at it.",
-  "author": { "name": "Minh Nguyen" },
+  "author": {
+    "name": "Minh Nguyen"
+  },
   "homepage": "https://github.com/tmn0212/claude-kit",
   "repository": "https://github.com/tmn0212/claude-kit",
   "license": "MIT",
-  "keywords": ["output-style", "writing", "readability", "vale", "prose"]
+  "keywords": [
+    "output-style",
+    "writing",
+    "readability",
+    "vale",
+    "prose"
+  ]
 }

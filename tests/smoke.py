@@ -310,6 +310,46 @@ def main() -> int:
         again = run(friction, ["--top", "3"], root)
         expect_signal("friction reads its own record", again, "FRICTION OK")
 
+    # --- regressions the review found ---------------------------------------
+    # Each of these shipped broken once. The check is cheaper than the bug.
+    print("\nregressions")
+
+    # A batch FILE needs `%%I`; the `%I` command-line form is a hard syntax
+    # error, and two launchers had it, so `prose` and `brief` died on Windows.
+    bad_cmd = []
+    for cmd in sorted(PLUGINS.glob("*/bin/*.cmd")):
+        body = cmd.read_text(encoding="utf-8", errors="replace")
+        if "for %%I in" not in body:
+            bad_cmd.append(cmd.name)
+    check("every .cmd uses the batch-file %%I form", not bad_cmd, ", ".join(bad_cmd))
+
+    # `adr index` wrote its README unconditionally, destroying a hand-written one.
+    handwritten = root / "docs" / "decisions" / "README.md"
+    handwritten.write_text("# My own index\n\nThis took an hour.\n")
+    run(adr, ["index"], root)
+    backups = list((root / "docs" / "decisions").glob("README.md.bak-*"))
+    check("adr index preserved a foreign README", bool(backups), str(backups))
+    if backups:
+        check("the backup holds the original text", "took an hour" in backups[0].read_text())
+        for stale in backups:
+            stale.unlink()
+
+    # The friction log records every command run, so the directory has to
+    # exclude itself the moment it appears, not when somebody remembers.
+    ignore = root / "log" / ".gitignore"
+    check("log/ ignores itself", ignore.is_file() and "*" in ignore.read_text(), str(ignore))
+
+    # `promote` read with errors="replace" and wrote the result back, which
+    # turned any undecodable byte into U+FFFD after the move had already
+    # happened, leaving nothing to recover from.
+    binary = root / "tools" / "scratch" / "latin.py"
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_bytes(b"# caf\xe9 was here\nprint(1)\n")
+    run(promote, ["latin.py"], root)
+    moved = root / "tools" / "latin.py"
+    check("promote preserved a non-UTF-8 byte", moved.is_file() and b"\xe9" in moved.read_bytes(),
+          repr(moved.read_bytes()[:40]) if moved.is_file() else "not moved")
+
     # --- result -------------------------------------------------------------
     print()
     if args.keep:
