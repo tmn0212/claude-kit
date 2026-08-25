@@ -101,6 +101,14 @@ def deny(event: str, reason: str) -> None:
 
 
 def enabled(cfg) -> bool:
+    """Whether this plugin's hooks should do anything at all.
+
+    `guards.enabled = false` turns off EVERY hook the plugin installs, not just
+    the refusing ones. That matters for a project that already has its own
+    copies: without a single switch, the two sets both fire, the brief prints
+    twice and every Bash call is recorded twice, which quietly doubles the
+    numbers `friction` reports.
+    """
     return bool(setting(cfg, "guards.enabled", True))
 
 
@@ -334,7 +342,7 @@ def hook_depth() -> None:
 
 
 def friction_dir(cfg) -> Path | None:
-    if cfg is None:
+    if cfg is None or not enabled(cfg):
         return None
     return cfg.root / "log" / "friction"
 
@@ -424,7 +432,7 @@ def hook_session_start() -> None:
     if data.get("source") == "compact":
         return
     cfg = config()
-    if cfg is None:
+    if cfg is None or not enabled(cfg):
         return
     brief = Path(__file__).resolve().parent.parent / "bin" / "brief"
     if not brief.is_file():

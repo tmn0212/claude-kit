@@ -84,7 +84,10 @@ root_relative_dirs = ["tools", "docs", "src", "tests"]
 
 
 [guards]
-# The hooks that refuse the expensive shapes. Set false to disable all of them.
+# Every hook this kit installs. Set false and the plugin goes silent in this
+# project: no guards, no friction recording, no session brief. That is the
+# switch for a project that already has its own copies, where both sets
+# firing would print the brief twice and double the friction numbers.
 enabled = true
 
 # A Read larger than this, of a document inside `kb.sources`, is refused with

@@ -277,6 +277,26 @@ def main() -> int:
         junk = run(guard, [action], root, stdin="not json at all")
         check(f"{action} fails open on garbage", junk.returncode == 0, junk.stderr)
 
+    # `guards.enabled = false` must silence EVERY hook, not just the refusing
+    # ones. A project with its own copies needs one switch; without it the two
+    # sets both fire, the brief prints twice and friction double-counts.
+    config_path = root / "claude-kit.toml"
+    original = config_path.read_text()
+    config_path.write_text(original + "\n[guards]\nenabled = false\n")
+    off_read = run(guard, ["read"], root, stdin=payload)
+    check("enabled=false silences the read guard", off_read.stdout.strip() == "", off_read.stdout)
+    off_bash = run(guard, ["bash"], root, stdin=poll)
+    check("enabled=false silences the bash guard", off_bash.stdout.strip() == "", off_bash.stdout)
+    off_brief = run(guard, ["session-start"], root, stdin=json.dumps({"source": "startup"}))
+    check("enabled=false silences the brief", off_brief.stdout.strip() == "", off_brief.stdout)
+    marker = json.dumps({"tool_use_id": "off_1", "tool_input": {"command": "ls"}})
+    run(guard, ["friction-pre"], root, stdin=marker)
+    run(guard, ["friction-post"], root, stdin=marker)
+    log_path = root / "log" / "friction" / "commands.jsonl"
+    before = log_path.read_text() if log_path.is_file() else ""
+    check("enabled=false records no friction", "off_1" not in before and "ls" not in before, before)
+    config_path.write_text(original)
+
     # The friction pair must produce a record the reader can parse back.
     call = json.dumps({"tool_use_id": "call_1", "tool_input": {"command": "ls -l"}})
     run(guard, ["friction-pre"], root, stdin=call)
