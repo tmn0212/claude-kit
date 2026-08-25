@@ -109,9 +109,20 @@ def run_kb_query(cases: dict, root: Path, verbose: bool) -> None:
             [sys.executable, str(kb), "search", case["query"]],
             capture_output=True, text=True, cwd=str(root), timeout=60,
         )
-        ok = "bad query" not in result.stderr and result.returncode == 0
-        if ok and case.get("finds"):
-            ok = case["finds"] in result.stdout
+        # Two expectations, because "found nothing" and "did not crash" are
+        # different claims and the old check conflated them. It asserted only
+        # `"bad query" not in stderr`, which a traceback also satisfies.
+        clean = result.returncode == 0 and "Traceback" not in result.stderr
+        if case.get("expect", "clean") == "hits":
+            # `KB OK` prints only on a non-empty result, so it doubles as a
+            # "found something" assertion.
+            ok = clean and "KB OK" in result.stdout
+            if ok and case.get("finds"):
+                ok = case["finds"] in result.stdout
+        else:
+            # The whole of stdout is pinned. A syntax error or a traceback both
+            # produce something other than exactly this.
+            ok = clean and result.stdout.strip() == "no hits"
         label = f"kb_query: {case['why']}" if verbose else f"kb_query: {case['query']}"
         record(ok, label, (result.stderr or result.stdout)[:200])
 
@@ -125,8 +136,14 @@ def prepare(root: Path) -> None:
         '[kb.aliases]\ndma = "direct memory access"\n\n'
         '[adr]\ndir = "docs/decisions"\n'
     )
+    # The fixture has to contain something for every `expect = "hits"` case, or
+    # the case degrades into "did not crash" without saying so.
     (root / "docs" / "note.md").write_text(
-        "# Note\n\n## Zebra\n\nZebras are striped, ratio 2:1, on v1.3 with allkeys-lru.\n"
+        "# Note\n\n"
+        "## Zebra\n\n"
+        "Zebras are striped, ratio 2:1, on v1.3 with allkeys-lru.\n\n"
+        "## Parsing\n\n"
+        "The C++ (draft) grammar and *args handling both need direct memory access.\n"
     )
     subprocess.run(["git", "init", "-q"], cwd=str(root), capture_output=True)
     subprocess.run(
@@ -141,6 +158,16 @@ RUNNERS = {
     "kb_query": run_kb_query,
 }
 
+# The floor each group must clear. Without it, emptying the table or misspelling
+# a group name prints CASES OK having run nothing, which is what a review
+# reproduced. Raise a number here when you add cases; never lower one to make a
+# run pass.
+FLOORS = {
+    "bash_guard": 34,
+    "claim_gate": 15,
+    "kb_query": 7,
+}
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(prog="cases.py", description=__doc__.split("\n")[0])
@@ -151,12 +178,26 @@ def main() -> int:
     with open(CASES, "rb") as handle:
         tables = tomllib.load(handle)
 
+    # A group in the table with no runner is a typo, and silence is how a typo
+    # survives. Name it before running anything.
+    unknown = sorted(set(tables) - set(RUNNERS))
+    if unknown:
+        print(f"CASES FAILED: no runner for {', '.join(unknown)} in cases.toml")
+        return 1
+
     groups = [args.group] if args.group else sorted(RUNNERS)
     with tempfile.TemporaryDirectory(prefix="claude-kit-cases-") as workdir:
         root = Path(workdir)
         prepare(root)
         for name in groups:
+            before = len(results)
             RUNNERS[name](tables.get(name, {}), root, args.verbose)
+            ran = len(results) - before
+            floor = FLOORS.get(name, 1)
+            if ran < floor:
+                record(False, f"{name}: ran {ran} cases, floor is {floor}",
+                       "a group that runs fewer cases than it used to is a table "
+                       "that lost entries, or a group name that no longer matches")
 
     failures = [r for r in results if not r[0]]
     for ok, label, detail in results:

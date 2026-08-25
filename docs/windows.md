@@ -7,7 +7,10 @@ a few things worth knowing.
 
 ## The one setting
 
-**Set each plugin's `python` option to `py`.**
+**Set the `python` option to `py` on every plugin that has one.**
+
+Four of the five do. `writing` ships no hooks, so it declares no options and
+passing `--config` to it earns a warning rather than doing anything.
 
 Windows ships `python.exe` and `py.exe`. Linux and macOS usually ship `python3`
 and often no bare `python` at all. Measured on the machine this kit was built
@@ -45,7 +48,7 @@ If you fork this repo, keep that file.
 
 A plugin's `bin/` joins the Bash tool's PATH while the plugin is enabled. On
 POSIX a shebang script is directly executable, so `kb` works as-is. Windows PATH
-resolution needs a real executable, so all seven tools also ship a `.cmd` twin.
+resolution needs a real executable, so all eight tools also ship a `.cmd` twin.
 
 Those twins pick their own interpreter: `py` when `where py` finds it, else
 `python`. They do NOT read the plugin's `python` option, because `userConfig`

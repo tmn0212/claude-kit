@@ -53,15 +53,20 @@ wherever both exist.
 
 ## Consequences
 
-Windows users set one option per plugin, at install time with
+Windows users set one option per plugin that HAS one, at install time with
 `--config python=py` or afterwards with `/plugin configure`. There is no
 `claude plugin configure` subcommand; that was checked against the CLI.
+
+Four of the five plugins declare the option. `writing` ships no hooks, so it
+declares no `userConfig` at all and passing `--config` to it earns a warning.
+That is the contract working as designed: `userConfig` substitution reaches
+`hooks.json` and nothing else.
 
 `.gitattributes` pins `*.py` and `*.sh` to LF and `*.ps1` and `*.cmd` to CRLF,
 because a Windows clone with the installer default rewrites every shebang into
 an unrunnable `...python3\r`.
 
-Seven `.cmd` launchers exist so the tools resolve on the Windows PATH, which
+Eight `.cmd` launchers exist so the tools resolve on the Windows PATH, which
 needs a real executable rather than a shebang. They pick `py` over `python`
 themselves, because `userConfig` substitution reaches `hooks.json` and nothing
 else.

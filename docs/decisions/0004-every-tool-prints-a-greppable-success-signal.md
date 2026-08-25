@@ -24,8 +24,12 @@ a truncated brief rather than as a silent wrong answer.
 ## Decision
 
 Every tool prints a greppable success line on stdout as its last act: `KB OK`,
-`ADR OK`, `PROMOTE OK`, `TOKENCOST OK`, `FRICTION OK`, `BRIEF OK`, `PROSE OK`,
-`SMOKE OK`.
+`ADR OK`, `PROMOTE OK`, `CLAIM OK`, `TOKENCOST OK`, `FRICTION OK`, `BRIEF OK`,
+`PROSE OK`. The test harness adds `CASES OK`, `SMOKE OK` and `VERIFY OK`.
+
+The list is a maintenance burden and it earns it: a review found `CLAIM OK`
+missing here months after the tool shipped, which is the same drift the
+convention exists to make visible elsewhere.
 
 **Grep for the line, not exit code 0.** Anything driving these greps.
 

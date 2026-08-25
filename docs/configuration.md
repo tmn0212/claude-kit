@@ -17,8 +17,10 @@ for a `.git` directory, then fall back to the working directory itself.
 That order matters for a monorepo: a config beside a sub-package wins over the
 repository root, so each package can index its own documents.
 
-`CLAUDE_PROJECT_DIR` is used as the starting point when it is set, which is what
-makes the hooks agree with the command line about where the project is.
+`CLAUDE_PROJECT_DIR` is deliberately NOT consulted during discovery. The hooks
+pass it in explicitly, which is the one place it is the right answer. Letting it
+override the working directory meant that running a tool inside project B during
+a session rooted at project A quietly answered about A.
 
 ## The sections
 
@@ -29,7 +31,8 @@ makes the hooks agree with the command line about where the project is.
 | `[adr]` | `adr`, `kb why` | Where decision records live, and their statuses |
 | `[promote]` | `promote`, bash guard | The scratch directory, its destination, and the registry |
 | `[economics]` | `tokencost`, `friction` | Command identity and the measured call penalty |
-| `[guards]` | the hooks | Thresholds, and a single switch to turn them all off |
+| `[guards]` | every hook the kit installs | Thresholds, and a single switch to turn them all off |
+| `[claims]` | `claim`, the claim gate | The Stop hook, the ledger path, and the labels that satisfy it |
 
 ## `[kb.aliases]` is the part worth tuning
 
@@ -78,6 +81,9 @@ says how far a change reaches.
 enabled = false
 ```
 
+That is the kit-wide switch: it silences every hook in every plugin, not only
+the refusing ones. `claims.gate = false` turns off the claim gate alone.
+
 Worth knowing before you do: the guards are the enforcement half of the
 knowledge base. A rule written in `CLAUDE.md` is a message at the top of the
 context window, and by the time a session is deep it is a long way from the
@@ -88,7 +94,7 @@ set. `read_bytes` and `heredoc_lines` both exist for that.
 
 ## Per-machine overrides
 
-Two environment variables sit outside the config file, because they describe a
+Four environment variables sit outside the config file, because they describe a
 machine rather than a project:
 
 | Variable | Effect |

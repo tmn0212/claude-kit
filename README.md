@@ -20,10 +20,13 @@ instrumentation, writing control, and tiered subagents, in two commands.
 ├─ agent-tiers ─────────────────────────────────────────────────┤
 │  Explore / Explore-quick, web-researcher / -quick             │
 │  prompt-shaper: decide what research an ask is worth          │
+├─ claim-gate ──────────────────────────────────────────────────┤
+│  a Stop hook that refuses an unlabelled number                │
+│  claim      binds a measurement to the code behind it         │
 └───────────────────────────────────────────────────────────────┘
 ```
 
-Install what you want; the four are independent.
+Install what you want; the five are independent.
 
 ## Install
 
@@ -32,9 +35,16 @@ claude plugin marketplace add tmn0212/claude-kit
 claude plugin install knowledge-core@claude-kit --scope user --config python=python3
 ```
 
-Repeat for `session-economics`, `writing` and `agent-tiers`. That is the whole
-installation: a plugin ships its own skills, agents, output styles, hooks and a
-`bin/` directory that joins the Bash tool's PATH while it is enabled.
+Repeat for `session-economics`, `agent-tiers` and `claim-gate`. That is the
+whole installation: a plugin ships its own skills, agents, output styles, hooks
+and a `bin/` directory that joins the Bash tool's PATH while it is enabled.
+
+`writing` takes no `--config`, because it ships no hooks and therefore declares
+no options:
+
+```sh
+claude plugin install writing@claude-kit --scope user
+```
 
 On Windows pass `--config python=py` instead. To change it later, run
 `/plugin configure <plugin>@claude-kit` inside a session.
@@ -141,8 +151,14 @@ The aligned path is 1.7x faster than the misaligned one.
    -> blocked: add measured, derived, assumed, or not verified
 ```
 
-Four things have to hold. A number with a unit. A comparison in the same
-sentence. Both outside any code fence. And no label anywhere in the message.
+Four things have to hold. A number carrying a unit or an `Nx`. A comparison in
+the same sentence. Both outside any code fence. And no label anywhere outside a
+fence either.
+
+The comparison test is deliberately conservative, because a false positive
+teaches people to disable the hook. A strong comparative fires on its own;
+`improved` or `reduced` needs a metric noun beside it, so "I reduced the timeout
+from 30s to 10s" is not a claim and "throughput improved to 21.9 MB/s" is.
 
 It fires once per session, so it stays a nudge.
 
@@ -230,11 +246,24 @@ See [docs/windows.md](docs/windows.md) for the rest, including why
 ## Testing
 
 ```sh
-python3 tests/smoke.py
+python3 tests/verify.py
 ```
 
-Builds a throwaway project, drives every tool, and asserts on each success
-signal. `SMOKE OK` on stdout is the pass condition.
+Six stages, one signal. `VERIFY OK` is the pass condition, and a failure names
+the stage rather than requiring a bisect.
+
+| Stage | What it catches |
+|---|---|
+| `json` | A manifest that will not parse |
+| `validate` | A manifest the harness rejects |
+| `shebang` | A launcher with the wrong line endings |
+| `cases` | A guard that denies working commands, or misses its target shape |
+| `smoke` | A tool that half-works in a project that is not this one |
+| `prose` | A document past the readability thresholds |
+
+The two halves run alone as well. `tests/cases.py` drives `tests/cases.toml`,
+where **adding a case costs one line**; `tests/smoke.py` drives the lifecycles
+that need sequencing.
 
 ## A convention worth copying
 

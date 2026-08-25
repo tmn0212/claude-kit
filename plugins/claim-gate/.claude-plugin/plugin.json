@@ -1,13 +1,21 @@
 {
   "name": "claim-gate",
   "displayName": "Claim gate",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Refuses to end a turn on a comparative claim in numbers that never says how the number is known, and binds a measurement to the code that produced it so you notice when that code moves.",
-  "author": { "name": "Minh Nguyen" },
+  "author": {
+    "name": "Minh Nguyen"
+  },
   "homepage": "https://github.com/tmn0212/claude-kit",
   "repository": "https://github.com/tmn0212/claude-kit",
   "license": "MIT",
-  "keywords": ["verification", "evidence", "measurement", "provenance", "hallucination"],
+  "keywords": [
+    "verification",
+    "evidence",
+    "measurement",
+    "provenance",
+    "hallucination"
+  ],
   "userConfig": {
     "python": {
       "type": "string",

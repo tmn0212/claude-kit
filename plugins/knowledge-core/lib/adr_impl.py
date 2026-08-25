@@ -71,15 +71,18 @@ def yaml_scalar(value: str) -> str:
     text = str(value)
     if not text:
         return ""
-    needs_quotes = (
-        ": " in text
-        or text.endswith(":")
-        or text[0] in "-?:,[]{}#&*!|>'\"%@`"
-        or text.strip() != text
-    )
-    if not needs_quotes:
+    # A WHITELIST. The first version listed what needs quoting and missed three
+    # things: ` #` starts a comment anywhere in YAML, not only at position 0; an
+    # interior tab or newline breaks the block without tripping a strip() test;
+    # and a bare `2026` or `yes` parses as an int or a bool rather than a title.
+    # Enumerating what is safe is the only version that stays correct.
+    safe = re.fullmatch(r"[A-Za-z][A-Za-z0-9 ._-]*", text) and not text.endswith(" ")
+    typed = text.lower() in {
+        "true", "false", "yes", "no", "on", "off", "null", "none", "~",
+    }
+    if safe and not typed:
         return text
-    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
 
 
 def yaml_unquote(value: str) -> str:
@@ -103,6 +106,12 @@ def fm_read(path: Path) -> dict:
     meta: dict = {}
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     if not lines or lines[0].strip() != "---":
+        return meta
+    # The block has to CLOSE. Without this the whole document reads as front
+    # matter, so a `status:` line in the body overrides the real one and every
+    # command downstream reports the wrong cause: `adr accept` said the record
+    # was "prose line" rather than saying the front matter was malformed.
+    if not any(line.strip() == "---" for line in lines[1:]):
         return meta
     # Block-list items accumulate in a SEPARATE dict. Stashing them in `meta`
     # under a suffixed key renamed any real key that happened to end in that
@@ -326,7 +335,13 @@ def cmd_index(cfg: Config, quiet: bool = False) -> int:
 
 def cmd_transition(cfg: Config, ident: str, want_from: str, want_to: str) -> int:
     path = find_adr(cfg, ident)
-    current = fm_read(path).get("status", "")
+    meta = fm_read(path)
+    if not meta:
+        raise AdrError(
+            f"{path.name}: front matter is missing or has no closing ---, "
+            "refusing to edit"
+        )
+    current = meta.get("status", "")
     if current != want_from:
         raise AdrError(f"{path.name} is '{current}', not '{want_from}'")
     fm_write(path, "status", want_to)

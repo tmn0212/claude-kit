@@ -114,6 +114,17 @@ class Kb:
         db.row_factory = sqlite3.Row
         return db
 
+    def readonly_uri(self) -> str:
+        """A read-only URI for the index, correctly encoded.
+
+        `f"file:{path}?mode=ro"` is not a URI, it is a format string that looks
+        like one. A `?` or `#` in the project path truncates it, `mode=ro` is
+        lost, and SQLite then opens the truncated path READ-WRITE and creates an
+        empty file there - which is the exact failure `healthy()` exists to
+        prevent. `as_uri()` percent-encodes all three.
+        """
+        return f"{self.db_path.as_uri()}?mode=ro"
+
     def healthy(self) -> bool:
         """Whether the index file exists AND holds a usable schema.
 
@@ -129,7 +140,7 @@ class Kb:
         except OSError:
             return False
         try:
-            db = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+            db = sqlite3.connect(self.readonly_uri(), uri=True)
             try:
                 db.execute("SELECT 1 FROM doc LIMIT 1").fetchone()
                 db.execute("SELECT 1 FROM fts LIMIT 1").fetchone()
@@ -286,7 +297,7 @@ class Kb:
         if not self.healthy():
             return sorted(relative for _s, relative, _p in self.walk()), [], []
         try:
-            db = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+            db = sqlite3.connect(self.readonly_uri(), uri=True)
             db.row_factory = sqlite3.Row
             try:
                 indexed = {

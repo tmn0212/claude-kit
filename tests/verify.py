@@ -43,6 +43,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 PLUGIN_NAMES = ["knowledge-core", "session-economics", "writing", "agent-tiers", "claim-gate"]
 
+# A stage returns True, False, or SKIP. The three used to be two, and a skipped
+# dependency returned True: on any machine without the claude CLI the entire
+# manifest-schema stage was a no-op that printed `ok`.
+SKIP = "skip"
+
+# Floors, so an empty collection cannot pass. Every one of these counted zero
+# and reported ok at some point: no manifests, no documents, no launchers.
+MIN_MANIFESTS = 9
+MIN_DOCS = 20
+MIN_LAUNCHERS = 8
+
 
 class Stage:
     def __init__(self, name: str, needs_network: bool = False):
@@ -57,13 +68,15 @@ def stage_json() -> tuple[bool, str]:
             json.loads(path.read_text(encoding="utf-8"))
         except Exception as exc:
             return False, f"{path.relative_to(ROOT)}: {exc}"
+    if len(files) < MIN_MANIFESTS:
+        return False, f"only {len(files)} manifests found, expected at least {MIN_MANIFESTS}"
     return True, f"{len(files)} manifests parse"
 
 
 def stage_validate() -> tuple[bool, str]:
     claude = shutil.which("claude") or str(Path.home() / ".local" / "bin" / "claude")
     if not Path(claude).exists():
-        return True, "skipped, the claude CLI is not on this machine"
+        return SKIP, "the claude CLI is not on this machine"
     targets = [ROOT] + [ROOT / "plugins" / name for name in PLUGIN_NAMES]
     for target in targets:
         result = subprocess.run(
@@ -107,7 +120,7 @@ def stage_prose() -> tuple[bool, str]:
         input="A short line.", capture_output=True, text=True, timeout=120,
     )
     if "not installed" in probe.stderr:
-        return True, "skipped, run `prose --setup` to enable"
+        return SKIP, "run `prose --setup` to enable"
     bad = []
     for path in docs:
         result = subprocess.run(
@@ -122,6 +135,8 @@ def stage_prose() -> tuple[bool, str]:
             bad.append(f"{path.relative_to(ROOT)} ({first})")
     if bad:
         return False, "; ".join(bad[:4])
+    if len(docs) < MIN_DOCS:
+        return False, f"only {len(docs)} documents found, expected at least {MIN_DOCS}"
     return True, f"{len(docs)} documents within the thresholds"
 
 
@@ -146,7 +161,22 @@ def stage_shebang() -> tuple[bool, str]:
             bad.append(f"{path.relative_to(ROOT)} (needs the batch-file %%I form)")
     if bad:
         return False, "; ".join(bad[:4])
-    return True, "launchers have the right line endings"
+    # A launcher that LOST its shebang is invisible to a loop that only inspects
+    # files which already have one, so count them rather than trusting the scan.
+    # `.venv/bin` matches "a bin directory" too, and a virtualenv's contents are
+    # not ours to police. It should not be here at all: the prose venv lives in
+    # the user cache so it survives a plugin update.
+    posix = [
+        p for p in (ROOT / "plugins").rglob("*")
+        if p.is_file() and p.parent.name == "bin" and p.suffix != ".cmd"
+        and ".venv" not in p.parts
+    ]
+    without = [str(p.relative_to(ROOT)) for p in posix if not p.read_bytes().startswith(b"#!")]
+    if without:
+        return False, "no shebang: " + "; ".join(without[:4])
+    if len(posix) < MIN_LAUNCHERS:
+        return False, f"only {len(posix)} launchers found, expected at least {MIN_LAUNCHERS}"
+    return True, f"{len(posix)} launchers, right shebangs and line endings"
 
 
 STAGES = [
@@ -170,10 +200,12 @@ def main() -> int:
             print(f"  {name:<10} {'(network)' if network else ''}")
         return 0
 
-    failed = []
+    failed: list[str] = []
+    skipped: list[str] = []
     for name, run, network in STAGES:
         if args.fast and network:
-            print(f"  {'skip':<6} {name}")
+            print(f"  {'SKIP':<6} {name:<10}   --fast")
+            skipped.append(name)
             continue
         started = time.monotonic()
         try:
@@ -181,14 +213,22 @@ def main() -> int:
         except Exception as exc:  # a stage that crashes is a failed stage
             ok, detail = False, f"{type(exc).__name__}: {exc}"
         elapsed = time.monotonic() - started
-        print(f"  {'ok' if ok else 'FAIL':<6} {name:<10} {elapsed:>5.1f}s  {detail}")
-        if not ok:
+        state = "SKIP" if ok == SKIP else ("ok" if ok else "FAIL")
+        print(f"  {state:<6} {name:<10} {elapsed:>5.1f}s  {detail}")
+        if ok == SKIP:
+            skipped.append(name)
+        elif not ok:
             failed.append(name)
 
     print()
     if failed:
         print(f"VERIFY FAILED: {', '.join(failed)}")
         return 1
+    if skipped:
+        # Not a failure, but not a clean bill either. Saying so is the whole
+        # point: a stage that did no work must not read as a stage that passed.
+        print(f"VERIFY OK, WITH SKIPS: {', '.join(skipped)}")
+        return 0
     print("VERIFY OK")
     return 0
 

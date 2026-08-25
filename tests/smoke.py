@@ -14,6 +14,7 @@ of documents, then runs each tool and asserts on its success signal.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -226,7 +227,11 @@ def main() -> int:
     br = run(brief, [], root)
     expect_signal("brief", br, "BRIEF OK")
     check("brief names the project", "smoke-project" in br.stdout, br.stdout)
-    check("brief reports open decisions", "adr" in br.stdout, br.stdout)
+    # The exact state this project is in by now: 0001 was accepted and then
+    # superseded by 0002, which is still proposed. So zero accepted and one
+    # open, and asserting the numbers is what makes this more than a word count.
+    check("brief reports the real decision counts",
+          "0 accepted, 1 open" in br.stdout, br.stdout)
 
     # --- hooks --------------------------------------------------------------
     print("\nhooks")
@@ -273,16 +278,35 @@ def main() -> int:
     mx = run(guard, ["bash"], root, stdin=json.dumps({"tool_input": {"command": mixed}}))
     check("cat heredoc beside python is not denied", mx.stdout.strip() == "", mx.stdout)
 
-    # An unknown action also returns 0, so assert the action EXISTS before
-    # asserting it fails open. Otherwise this passes with an empty dispatch table.
-    known = (PLUGINS / "session-economics" / "hooks" / "guard.py").read_text()
-    for action in ["read", "bash", "depth", "friction-pre", "friction-post", "session-start"]:
+    # WIRING. Every action a hooks.json invokes must exist in the dispatch
+    # table, and every entry in the table must be invoked by some hooks.json.
+    # The previous version grepped guard.py's own source text for the action
+    # name, which passes against a table of `lambda: None`.
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("guardmod", guard)
+    guardmod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guardmod)
+    declared = set(guardmod.ACTIONS)
+
+    wired = set()
+    for manifest in sorted(PLUGINS.rglob("hooks/hooks.json")):
+        spec_json = json.loads(manifest.read_text())
+        for entries in spec_json.get("hooks", {}).values():
+            for matcher in entries:
+                for entry in matcher.get("hooks", []):
+                    argv = entry.get("args") or []
+                    for arg in argv[1:]:
+                        wired.add(arg)
+    check("every wired action exists in the table", wired <= declared,
+          f"wired but undeclared: {sorted(wired - declared)}")
+    check("every declared action is wired to an event", declared <= wired,
+          f"declared but never wired: {sorted(declared - wired)}")
+
+    for action in sorted(declared):
         junk = run(guard, [action], root, stdin="not json at all")
-        check(
-            f"{action} fails open on garbage",
-            junk.returncode == 0 and junk.stderr.strip() == "" and f'"{action}"' in known,
-            junk.stderr,
-        )
+        check(f"{action} fails open on garbage",
+              junk.returncode == 0 and junk.stderr.strip() == "", junk.stderr)
 
     # `guards.enabled = false` must silence EVERY hook, not just the refusing
     # ones. A project with its own copies needs one switch; without it the two
@@ -296,12 +320,37 @@ def main() -> int:
     check("enabled=false silences the bash guard", off_bash.stdout.strip() == "", off_bash.stdout)
     off_brief = run(guard, ["session-start"], root, stdin=json.dumps({"source": "startup"}))
     check("enabled=false silences the brief", off_brief.stdout.strip() == "", off_brief.stdout)
-    marker = json.dumps({"tool_use_id": "off_1", "tool_input": {"command": "ls"}})
+    # And the positive, which nothing asserted: with the guard on, the brief has
+    # to actually reach the session. It is the highest-leverage output in the
+    # kit and a broken path would have been invisible.
+    config_path.write_text(original)
+    on_brief = run(guard, ["session-start"], root, stdin=json.dumps({"source": "startup"}))
+    check("session-start emits the brief", "BRIEF OK" in on_brief.stdout, on_brief.stdout[:200])
+    check("and it names the project", "smoke-project" in on_brief.stdout, on_brief.stdout[:200])
+    compacted = run(guard, ["session-start"], root, stdin=json.dumps({"source": "compact"}))
+    check("session-start stays quiet after a compaction",
+          compacted.stdout.strip() == "", compacted.stdout)
+    config_path.write_text(original + "\n[guards]\nenabled = false\n")
+    # The log must ALREADY hold a record, or "nothing was added" is trivially
+    # true and passes with friction logging dead everywhere. Write one with the
+    # guard enabled first, then check the disabled pair adds nothing to it.
+    log_path = root / "log" / "friction" / "commands.jsonl"
+    config_path.write_text(original)
+    seed = json.dumps({"tool_use_id": "seed_1", "tool_input": {"command": "echo seeded"}})
+    run(guard, ["friction-pre"], root, stdin=seed)
+    run(guard, ["friction-post"], root, stdin=seed)
+    check("the friction pair writes when enabled",
+          log_path.is_file() and "seeded" in log_path.read_text(),
+          log_path.read_text() if log_path.is_file() else "no log")
+    baseline = log_path.read_text()
+
+    config_path.write_text(original + "\n[guards]\nenabled = false\n")
+    marker = json.dumps({"tool_use_id": "off_1", "tool_input": {"command": "should-not-appear"}})
     run(guard, ["friction-pre"], root, stdin=marker)
     run(guard, ["friction-post"], root, stdin=marker)
-    log_path = root / "log" / "friction" / "commands.jsonl"
-    before = log_path.read_text() if log_path.is_file() else ""
-    check("enabled=false records no friction", "off_1" not in before and "ls" not in before, before)
+    after = log_path.read_text()
+    check("enabled=false adds nothing to a non-empty log",
+          after == baseline and "should-not-appear" not in after, after[-200:])
     config_path.write_text(original)
 
     # The friction pair must produce a record the reader can parse back.
@@ -393,8 +442,13 @@ def main() -> int:
     # fm_write walked past an unclosed fence and rewrote matching body lines.
     broken = root / "docs" / "decisions" / "0009-unclosed.md"
     broken.write_text("---\nid: 0009\nstatus: proposed\n\n# no fence\n\nstatus: prose line\n")
-    run(adr, ["accept", "9"], root)
-    check("unclosed front matter is refused, not mangled",
+    refusal = run(adr, ["accept", "9"], root)
+    check("unclosed front matter is refused loudly",
+          refusal.returncode == 1 and "closing ---" in refusal.stderr,
+          refusal.stdout + refusal.stderr)
+    check("and the refusal names the front matter, not a body line",
+          "prose line" not in refusal.stderr, refusal.stderr)
+    check("and the body is left alone",
           "status: prose line" in broken.read_text(), broken.read_text())
     broken.unlink()
 
@@ -562,6 +616,19 @@ def main() -> int:
         check("a list item ends a sentence", bullets.count(".") >= 3, repr(bullets))
     except Exception as exc:  # pragma: no cover
         check("prose stripper importable", False, str(exc))
+
+    # kit_config.py is duplicated across plugins because a plugin installs as
+    # its own cache copy and cannot import from a sibling. Nothing kept the
+    # copies in step, so a fix applied to one and not the others would diverge
+    # silently. One hash, checked here.
+    print("\nkit_config")
+    copies = sorted(PLUGINS.glob("*/lib/kit_config.py"))
+    digests = {hashlib.sha256(p.read_bytes()).hexdigest()[:12] for p in copies}
+    check(f"all {len(copies)} kit_config copies are identical", len(digests) == 1,
+          "\n".join(f"{hashlib.sha256(p.read_bytes()).hexdigest()[:12]}  "
+                    f"{p.relative_to(PLUGINS)}" for p in copies))
+    check("every plugin that needs kit_config has one",
+          len(copies) >= 4, f"found {len(copies)}")
 
     # --- claim gate ---------------------------------------------------------
     print("\nclaim gate")

@@ -38,10 +38,15 @@ The `prompt_shaper.py` hook found this first and documented it with a
 measurement. The six guards claimed to fail open while still using
 `sys.exit`.
 
-`tests/smoke.py` feeds every hook a garbage payload and asserts exit 0 with an
-empty stderr. It also checks that the action name exists in the dispatch table.
-An unknown action returns 0 too, so without that check the assertion would pass
-against an empty table.
+`tests/smoke.py` feeds every action a garbage payload and asserts exit 0 with an
+empty stderr. That assertion alone is worthless: this hook always exits 0 by
+design, so it passes against a table of `lambda: None`.
+
+What makes it load-bearing is the wiring check beside it. Every action named in
+a `hooks.json` must exist in the dispatch table, and every entry in the table
+must be wired to an event. A review found `friction-fail` declared, wired, and
+never executed by any test; the earlier version of this check grepped the hook's
+own source text for the action name, which a dead handler also satisfies.
 
 The cost of this rule is real: a guard that fails open lets through the thing it
 exists to refuse. That trade is accepted. A missed refusal costs one polling

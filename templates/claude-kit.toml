@@ -115,6 +115,7 @@ ledger = "claims/ledger.jsonl"
 # What satisfies the gate. Yours may differ; what matters is that a reader can
 # tell a measurement from a guess.
 labels = [
-    "measured", "derived", "from a spec", "read in the source",
-    "from docs", "assumed", "unverified", "not verified", "estimated",
+    "measured", "derived", "from a spec", "from the datasheet",
+    "read in the source", "from docs", "assumed", "unverified",
+    "not verified", "not reproduced", "estimated",
 ]

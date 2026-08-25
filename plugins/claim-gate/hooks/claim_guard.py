@@ -69,15 +69,39 @@ _NUMBER = re.compile(
     r"IOPS\b|MB\b|GB\b|KB\b|tokens?/s)",
     re.I,
 )
-# Words that turn a number into a claim about something being better or worse.
-_COMPARISON = re.compile(
-    r"\b(faster|slower|quicker|speedup|speed-up|improv\w*|regress\w*|reduc\w*|"
-    r"increas\w*|decreas\w*|overhead|cheaper|costlier|throughput|latency|"
-    r"bandwidth|beats?|outperform\w*|worse|better|gain\w*|penalt\w*|"
-    r"ceiling|bottleneck)\b",
+# A STRONG comparative is a claim on its own: nothing is "1.7x faster" except
+# as a result.
+_STRONG = re.compile(
+    r"\b(faster|slower|quicker|speedup|speed-up|regress\w*|cheaper|costlier|"
+    r"beats?|outperform\w*|worse|better|overhead|penalt\w*)\b",
     re.I,
 )
+# A WEAK one is the ordinary verb for describing a change you made, and firing
+# on it alone refused "I reduced the timeout from 30s to 10s".
+_WEAK = re.compile(r"\b(improv\w*|reduc\w*|increas\w*|decreas\w*|gain\w*)\b", re.I)
+# A metric noun turns a weak verb into a claim. Alone it is not one: "the README
+# says throughput is 21.9 MB/s" is a citation, not an assertion.
+_METRIC = re.compile(
+    r"\b(throughput|latency|bandwidth|frame ?rate|fps|iops|ceiling|bottleneck|"
+    r"p50|p95|p99|requests?/s|tokens?/s)\b",
+    re.I,
+)
+
+
+def _is_claim(sentence: str) -> bool:
+    """Whether this sentence asserts a performance result.
+
+    Deliberately conservative. A false positive trains people to disable the
+    hook, which costs more than the claims it would have caught.
+    """
+    if _STRONG.search(sentence):
+        return True
+    return bool(_WEAK.search(sentence) and _METRIC.search(sentence))
 _FENCE = re.compile(r"```.*?```", re.S)
+# An UNCLOSED fence too. Output that was pasted and truncated has an opening
+# fence and no closing one, and scanning it as prose blocked on somebody else's
+# numbers.
+_OPEN_FENCE = re.compile(r"```.*\Z", re.S)
 _INLINE_CODE = re.compile(r"`[^`\n]*`")
 
 
@@ -131,15 +155,18 @@ def unlabelled_claim(text: str, labels: list[str]) -> str | None:
     which is the opposite of an unsupported claim, and stripping inline code
     keeps a bare `21.9` in a path or a flag from counting.
     """
-    prose = _FENCE.sub(" ", text)
+    prose = _OPEN_FENCE.sub(" ", _FENCE.sub(" ", text))
     lowered = prose.lower()
     if any(label in lowered for label in labels):
         return None
     prose = _INLINE_CODE.sub(" ", prose)
-    for sentence in re.split(r"(?<=[.!?])\s+|\n\n", prose):
+    # Split on table rows as well as sentence ends. Without it a twelve-row
+    # benchmark table is one 700-character "sentence" that the length guard
+    # skips, while a one-row table blocks: the same content, opposite outcomes.
+    for sentence in re.split(r"(?<=[.!?])\s+|\n\n|\n(?=\s*\|)", prose):
         if len(sentence) > 400:
             continue
-        if _NUMBER.search(sentence) and _COMPARISON.search(sentence):
+        if _NUMBER.search(sentence) and _is_claim(sentence):
             return " ".join(sentence.split())[:200]
     return None
 
@@ -162,6 +189,11 @@ def main() -> int:
         except Exception:
             return default
 
+    # `guards.enabled` is the kit-wide switch and it outranks this plugin's own.
+    # It was documented as turning off every hook and read by only one of them,
+    # which meant a project that set it still had its turns blocked here.
+    if not setting("guards.enabled", True):
+        return 0
     if not setting("claims.gate", True):
         return 0
 

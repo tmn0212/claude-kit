@@ -9,6 +9,7 @@ the same payload read, and six copies of that would drift.
     guard.py depth          UserPromptSubmit     report context depth on a crossing
     guard.py friction-pre   PreToolUse(Bash)     stamp a start time
     guard.py friction-post  PostToolUse(Bash)    record the outcome
+    guard.py friction-fail  PostToolUseFailure   record a failed command
     guard.py session-start  SessionStart         print the brief
 
 HARD RULES, because these run before every tool call in a project:
@@ -199,32 +200,72 @@ def hook_read() -> None:
 # --- 2. bash guard --------------------------------------------------------
 
 # A polling loop is a loop whose BODY sleeps. Both halves are load-bearing.
-# The previous version matched any loop keyword within 400 characters of the
-# word "sleep", which denied `git commit -m 'retry loop for the flaky sleep
-# test'` and `for f in logs/*; do grep -c sleep "$f"; done`, while missing
-# `until ...; do usleep 1; done` (no word boundary before "sleep") and any loop
-# whose body ran past the window.
-_LOOP_BODY = re.compile(r"\b(?:until|while|for)\b[^\n]{0,300}?\bdo\b(.*?)\bdone\b", re.S)
-# A sleep at a COMMAND position, so `grep -c sleep file` is not one.
-_SLEEP_CALL = re.compile(r"(?:^|[;&|(]|&&|\|\||\bdo\b|\bthen\b)\s*u?sleep\b")
-# `watch` is polling with the loop moved into another program.
-_WATCH = re.compile(r"(?:^|[;&|]|&&)\s*watch\s+")
-# The escape must be an assignment, not the word appearing inside a string.
-_ALLOW_POLL = re.compile(r"(?:^|[;&|]|&&)\s*ALLOW_POLL=1\b")
+# An earlier version matched any loop keyword within 400 characters of the word
+# "sleep", which denied `git commit -m 'retry loop for the flaky sleep test'`
+# while missing `do usleep 1; done`.
+#
+# Non-greedy on BOTH spans. Greedy `.*` between `do` and `done` swallows a whole
+# command, so `grep -n 'do sleep 2; done' FILE` reads as a loop body, and so does
+# any pair of unrelated loops with a sleep between them.
+# The body span is BOUNDED. Unbounded `(.*?)` backtracks: 800 unclosed `do`
+# in 36 KB took 6.3 seconds, on a pattern that runs before every Bash call.
+# A loop body worth refusing is never four thousand characters long.
+_LOOP_BODY = re.compile(
+    r"\b(?:until|while|for)\b[^\n]{0,300}?\bdo\b(.{0,4000}?)\bdone\b", re.S
+)
+
+# The start of a command: line start, or after a separator. Everything below
+# anchors here, because matching a NAME anywhere is what produced every false
+# positive: `python3` inside `cat > python3.py`, `node` inside a path.
+_CMD_START = r"(?:^|[;&|(]|&&|\|\||\bdo\b|\bthen\b)\s*"
+# An optional path in front of the program, so `/bin/sleep` and
+# `./.venv/bin/python3` are recognised. The last one is this project's own
+# convention, and it escaped the guard entirely.
+_PATHED = r"(?:[\w.@/-]*/)?"
+
+_SLEEP_CALL = re.compile(_CMD_START + _PATHED + r"u?sleep\b", re.M)
+# `watch` is polling with the loop moved into another program. `timeout N watch`
+# and a `watch` on its own line both count.
+_WATCH = re.compile(_CMD_START + r"(?:timeout\s+\S+\s+)?" + _PATHED + r"watch\b", re.M)
+# The escape must be an assignment at a command position, not the word inside a
+# string. It disarms the whole command, which is the documented behaviour.
+_ALLOW_POLL = re.compile(_CMD_START + r"ALLOW_POLL=1\b", re.M)
 # A program whose whole job is to run something many times. With a sleep at a
 # command position that IS a polling loop, with or without `do`/`done`.
 _REPEATER = re.compile(r"(?:^|[;&|]|&&)\s*(?:xargs|parallel)\b")
 # `sh -c` hides an entire loop inside one quoted argument.
 _SHELL_C = re.compile(r"\b(?:ba|z|k|a)?sh\b[^\n]*?\s-c(?:\s|$)")
-# An interpreter heredoc. `[^\n;&|]*` keeps the interpreter and the `<<` in one
-# command, so `python3 -c '...' && cat > f <<EOF` is not a match. The delimiter
-# is captured and must also appear alone on a later line, which is what
-# separates a real heredoc from a left-shift like `--shift '1<<20'`.
+# An interpreter heredoc.
+#
+# Three anchors, each closing a real hole. The interpreter must be at a COMMAND
+# position with an optional path, so `cat > python3.py <<EOF` is not a match and
+# `/usr/bin/python3 <<PY` is. `[^\n;&|]*` keeps the interpreter and the `<<` in
+# one segment, so `python3 -c '...' && cat > f <<EOF` is not a match. And the
+# opener may be followed by a redirect or a pipe, because `python3 - <<PY > out`
+# is still a heredoc and the old `$` anchor let it through.
+#
+# The delimiter is captured and must also appear alone on a later line, which is
+# what separates a real heredoc from a left shift like `--shift '1<<20'`.
+_INTERPRETERS = r"(?:python3?|node|perl|ruby|bun|deno|ipython|sqlite3)"
 _HEREDOC = re.compile(
-    r"\b(?:python3?|node|perl|ruby|bun|deno|ipython|sqlite3)\b"
-    r"[^\n;&|]*<<-?\s*[\'\"]?(\w+)[\'\"]?\s*$",
+    _CMD_START + _PATHED + _INTERPRETERS + r"\b"
+    r"[^\n;&|]*<<-?\s*[\'\"]?(\w+)[\'\"]?\s*(?:[<>|&].*)?$",
     re.M,
 )
+
+
+# A quoted span. Removing these before the top-level scan is what separates
+# searching FOR the banned shape from running it.
+_QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
+
+
+def strip_quotes(command: str) -> str:
+    """The command with quoted spans blanked out, newlines preserved.
+
+    Blanked rather than deleted, so a heredoc body stays the right number of
+    lines and the line count the heredoc rule reports is still true.
+    """
+    return _QUOTED.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), command)
 
 
 def shell_fragments(command: str):
@@ -270,8 +311,15 @@ def hook_bash() -> None:
     if not command:
         return
 
-    fragments = list(shell_fragments(command))
-    sleeps = any(_SLEEP_CALL.search(fragment) for fragment in fragments)
+    # The top-level text has its quoted spans blanked, so a command that merely
+    # CONTAINS the shape as a string is not the shape. Anything genuinely hidden
+    # in quotes comes back through shell_fragments, which shlex-extracts `sh -c`
+    # arguments and yields them whole.
+    fragments = [strip_quotes(command)] + list(shell_fragments(command))[1:]
+    # Only what the repeater RUNS counts. Measuring the whole command made
+    # `sleep 5; ls | xargs rm -f` a polling loop, because a sleep anywhere
+    # plus an xargs anywhere satisfied it.
+    sleeps_in_repeated = any(_SLEEP_CALL.search(f) for f in fragments[1:])
     polling = (
         any(_WATCH.search(fragment) for fragment in fragments)
         or any(
@@ -279,7 +327,7 @@ def hook_bash() -> None:
             for fragment in fragments
             for body in _LOOP_BODY.findall(fragment)
         )
-        or (any(_REPEATER.search(fragment) for fragment in fragments) and sleeps)
+        or (any(_REPEATER.search(f) for f in fragments) and sleeps_in_repeated)
     )
     if polling and not _ALLOW_POLL.search(command):
         deny(

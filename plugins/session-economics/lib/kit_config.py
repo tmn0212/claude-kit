@@ -69,8 +69,9 @@ DEFAULTS: dict = {
     "economics": {
         # Commands whose first word says nothing about what actually ran.
         "multiplexers": ["git", "npm", "npx", "yarn", "pnpm", "cargo", "go", "make", "docker"],
-        # Seconds of overhead a single tool call costs. Measured, not assumed:
-        # re-derive it for your own machine with `tokencost --calibrate`.
+        # Seconds of overhead a single tool call costs. Measured on one
+        # machine, so treat it as a starting point rather than a fact
+        # about yours.
         "penalty_seconds": 1.85,
         # Directories a bare relative path is likely rooted at.
         "root_relative_dirs": ["tools", "docs", "src", "tests"],

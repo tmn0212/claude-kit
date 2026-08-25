@@ -185,7 +185,37 @@ def _exit_clean(line=None):
     os._exit(0)
 
 
+def kit_hooks_enabled() -> bool:
+    """Whether the kit's hooks should run at all in this project.
+
+    Reads `guards.enabled` from claude-kit.toml when the config module is
+    reachable. Absent config, absent module, or any error means enabled: a hook
+    that fails closed on a missing dependency is worse than one that runs.
+    """
+    try:
+        import sys as _sys
+        from pathlib import Path as _Path
+
+        lib = _Path(__file__).resolve().parent.parent / "lib"
+        if str(lib) not in _sys.path:
+            _sys.path.insert(0, str(lib))
+        from kit_config import Config  # type: ignore
+
+        import os as _os
+
+        cfg = Config.load(_os.environ.get("CLAUDE_PROJECT_DIR"))
+        value = cfg.get("guards.enabled", True)
+        return True if value is None else bool(value)
+    except Exception:
+        return True
+
+
 def main():
+    # The kit-wide switch. A project that turns the kit's hooks off must not
+    # still get a routing line on every prompt.
+    if not kit_hooks_enabled():
+        _exit_clean()
+        return
     try:
         line = decide(_read_payload().get("prompt", ""))
     except Exception:  # noqa: BLE001 - a raise here must not block a prompt

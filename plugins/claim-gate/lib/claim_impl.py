@@ -108,13 +108,30 @@ def cmd_record(cfg: Config, args) -> int:
     root = cfg.root
     sources = {}
     missing = []
+    outside = []
     for name in args.source or []:
         path = (root / name).resolve()
+        # Inside the repo, or the ledger stops being portable. `rel()` falls back
+        # to an absolute path when it cannot make one relative, and the ledger is
+        # committed, so an outside source makes `claim verify` fail for everyone
+        # but the machine that recorded it.
+        try:
+            path.relative_to(root.resolve())
+        except ValueError:
+            outside.append(name)
+            continue
         got = digest(path)
         if got is None:
             missing.append(name)
         else:
             sources[rel(path, root)] = got
+    if outside:
+        sys.stderr.write(
+            f"claim: source outside the project: {', '.join(outside)}\n"
+            "  The ledger is committed, so an absolute path makes `claim verify`\n"
+            "  fail on every other checkout. Name a file inside the repo.\n"
+        )
+        return 1
     if missing:
         sys.stderr.write(f"claim: no such source file: {', '.join(missing)}\n")
         return 1

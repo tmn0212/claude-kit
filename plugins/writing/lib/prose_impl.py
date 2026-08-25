@@ -77,8 +77,21 @@ def strip_md(t):
     # with no full stops measured as one 43-word sentence. The house rule is
     # that a bullet IS a sentence, so measuring it as one is the honest read,
     # and the separate no-stop check still reports the missing punctuation.
-    t = re.sub(r"^\s*[-*+]\s+(.*?)\s*$", lambda m: m.group(1).rstrip(".,;:") + ".",
-               t, flags=re.M)
+    # The whole item, including continuation lines, then one terminator. An
+    # earlier version matched a single LINE, which put a full stop in the middle
+    # of every wrapped bullet and understated the longest sentence - the exact
+    # mirror of the heading bug this rule was added to fix.
+    #
+    # A bullet already ending in `?`, `!` or an ellipsis keeps it: appending
+    # produced "Is it faster?." in reported output.
+    def _item(match):
+        body = " ".join(match.group(1).split())
+        return body if body.endswith((".", "?", "!")) else body.rstrip(",;:") + "."
+
+    t = re.sub(
+        r"^[ \t]*[-*+][ \t]+(.+?)(?=\n[ \t]*(?:[-*+][ \t]|\n)|\Z)",
+        _item, t, flags=re.M | re.S,
+    )
     # A heading ENDS a sentence. Stripping the `#` and leaving the text bare
     # runs the heading into the paragraph below it, so "## Context" followed by
     # a 24-word opener measured as one 30-word sentence. Every document with

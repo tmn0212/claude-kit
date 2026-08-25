@@ -114,6 +114,65 @@ cmd = "sqlite3 db <<SQL\n"
 pad = "select 1;\n"
 tail = "SQL\n"
 
+# --- regressions a review found in the bash port of these same rules ---------
+[[bash_guard.allow]]
+why = "an interpreter name inside a FILENAME is not a command"
+cmd = "cat > python3.py <<'EOF'\n"
+pad = "x\n"
+tail = "EOF\n"
+
+[[bash_guard.allow]]
+why = "grepping FOR the banned shape is not the banned shape"
+cmd = "grep -n 'until X; do sleep 2; done' CLAUDE.md"
+
+[[bash_guard.allow]]
+why = "a commit message carrying all three keywords"
+cmd = "git commit -m 'ban do X; sleep 2; Y done here'"
+
+[[bash_guard.allow]]
+why = "two loops with an unrelated pause between them, not one loop body"
+cmd = "for f in *.c; do gcc -c $f; done; sleep 2; echo 'all done'"
+
+[[bash_guard.allow]]
+why = "an interpreter name inside a directory name"
+cmd = "node_modules/.bin/tool --version"
+
+[[bash_guard.deny]]
+why = "an absolute path to sleep still sleeps"
+cmd = "until [ -s out ]; do /bin/sleep 2; done"
+
+[[bash_guard.deny]]
+why = "a trailing redirect does not stop it being a heredoc"
+cmd = "python3 - <<'PY' > /tmp/out.txt\n"
+pad = "x = 1\n"
+tail = "PY\n"
+
+[[bash_guard.deny]]
+why = "a trailing pipe does not stop it being a heredoc"
+cmd = "python3 - <<'PY' | head -20\n"
+pad = "x = 1\n"
+tail = "PY\n"
+
+[[bash_guard.deny]]
+why = "a path-prefixed interpreter, which is a common project convention"
+cmd = "./.venv/bin/python3 <<'PY'\n"
+pad = "x = 1\n"
+tail = "PY\n"
+
+[[bash_guard.deny]]
+why = "a line before the opener used to defeat a first-line-only scan"
+cmd = "set -euo pipefail\npython3 - <<'PY'\n"
+pad = "x = 1\n"
+tail = "PY\n"
+
+[[bash_guard.deny]]
+why = "watch behind a timeout wrapper is still polling"
+cmd = "timeout 300 watch -n 5 ls"
+
+[[bash_guard.deny]]
+why = "watch on its own line after another command"
+cmd = "echo start\nwatch -n 5 ls"
+
 # ---------------------------------------------------------------- claim gate
 [[claim_gate.deny]]
 why = "the plain shape: a multiplier, a comparison, no label"
@@ -155,34 +214,70 @@ text = "We are on Python 3.12 and it works."
 why = "a line count in passing"
 text = "That module is 1200 lines, so it needs splitting."
 
+[[claim_gate.allow]]
+why = "an ordinary statement of a change made, not a claim about a result"
+text = "I reduced the timeout from 30s to 10s."
+
+[[claim_gate.allow]]
+why = "same shape, a different weak verb"
+text = "I increased the retry budget to 25%."
+
+[[claim_gate.allow]]
+why = "coverage is not a performance metric and this asserts nothing"
+text = "Coverage improved to 80%."
+
+[[claim_gate.allow]]
+why = "citing a documented number is the behaviour the tool wants"
+text = "The README says throughput is 21.9 MB/s."
+
+[[claim_gate.allow]]
+why = "an unclosed fence is truncated output, not prose"
+text = "Here is what it printed:\n\n```\n21.9 MB/s faster than before"
+
 # ------------------------------------------------------------- kb query shapes
 # Every one of these raised an FTS5 syntax error at some point, and a syntax
 # error sends the reader back to grep, which is what kb exists to replace.
+# `expect = "hits"` means the query must return results, which is the strong
+# assertion. `expect = "clean"` means it must return exactly "no hits" and never
+# an error, which is the right claim for a query that is genuinely malformed.
+
 [[kb_query.ok]]
 why = "a colon parsed as a column filter and matched nothing"
 query = "ratio 2:1"
+expect = "hits"
 finds = "Zebra"
 
 [[kb_query.ok]]
 why = "parentheses are FTS5 syntax"
 query = "C++ (draft)"
+expect = "hits"
+finds = "Parsing"
 
 [[kb_query.ok]]
 why = "a leading star is a prefix operator with no term"
 query = "*args handling"
-
-[[kb_query.ok]]
-why = "a dangling boolean operator survived the tokenised retry"
-query = "a AND"
-
-[[kb_query.ok]]
-why = "nothing tokenises at all"
-query = "-"
+expect = "hits"
+finds = "Parsing"
 
 [[kb_query.ok]]
 why = "an alias written as a string was iterated character by character"
 query = "dma"
+expect = "hits"
+finds = "direct memory access"
 
 [[kb_query.ok]]
 why = "a version string carries punctuation FTS5 treats as syntax"
 query = "v1.3 allkeys-lru"
+expect = "hits"
+finds = "Zebra"
+
+[[kb_query.ok]]
+why = "a dangling boolean operator used to survive the tokenised retry and error"
+query = "a AND"
+expect = "hits"
+finds = "Parsing"
+
+[[kb_query.ok]]
+why = "nothing tokenises at all, so there is nothing to ask"
+query = "-"
+expect = "clean"
