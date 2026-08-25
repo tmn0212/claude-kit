@@ -16,10 +16,10 @@ An agent driving a command-line tool has one signal to check, and exit code 0 is
 not enough: a tool that half-worked, printed a partial answer and exited 0 is
 indistinguishable from one that worked.
 
-This is not hypothetical. `friction.py --brief` in the source project crashed
-after printing its first line, and because the session-start hook grepped for
-`BRIEF OK` rather than trusting the exit code, the failure showed up as a
-truncated brief rather than as a silent wrong answer.
+This is not hypothetical. `friction.py --brief` in the source project
+crashed after printing its first line. The session-start hook grepped for
+`BRIEF OK` rather than trusting the exit code, so the failure showed up as
+a truncated brief rather than as a silent wrong answer.
 
 ## Decision
 

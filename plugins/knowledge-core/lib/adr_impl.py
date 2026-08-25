@@ -58,6 +58,41 @@ class AdrError(Exception):
     pass
 
 
+def yaml_scalar(value: str) -> str:
+    """A front-matter value that a real YAML parser will accept.
+
+    The parser in this file is deliberately not YAML: one line per key, split on
+    the first colon, which reads `title: A gate: for numbers` back correctly.
+    Nothing here complained. Vale, which does use a YAML parser, refused the
+    file with "mapping values are not allowed in this context".
+
+    So the format stays ours to read and becomes valid YAML to write.
+    """
+    text = str(value)
+    if not text:
+        return ""
+    needs_quotes = (
+        ": " in text
+        or text.endswith(":")
+        or text[0] in "-?:,[]{}#&*!|>'\"%@`"
+        or text.strip() != text
+    )
+    if not needs_quotes:
+        return text
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def yaml_unquote(value: str) -> str:
+    """The inverse, so a quoted value round-trips through fm_read."""
+    text = value.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        inner = text[1:-1]
+        if text[0] == '"':
+            return inner.replace('\\"', '"').replace("\\\\", "\\")
+        return inner
+    return text
+
+
 # --- front matter ---------------------------------------------------------
 # Flat `key: value` pairs between the leading and closing `---`. Deliberately
 # not full YAML: the format is ours, one line per key. Unlike the awk original,
@@ -84,7 +119,7 @@ def fm_read(path: Path) -> dict:
             continue
         key, _, value = line.partition(":")
         key = key.strip()
-        meta[key] = value.strip()
+        meta[key] = yaml_unquote(value)
     for name, items in blocks.items():
         if not meta.get(name):
             # Joined, not nested: these are only ever read as a set of globs,
@@ -108,13 +143,13 @@ def fm_write(path: Path, key: str, value: str) -> None:
     for line in lines[1:]:
         if inside and line.strip() == "---":
             if not done:
-                out.append(f"{key}: {value}\n")
+                out.append(f"{key}: {yaml_scalar(value)}\n")
                 done = True
             inside = False
             out.append(line)
             continue
         if inside and ":" in line and line.partition(":")[0].strip() == key:
-            out.append(f"{key}: {value}\n")
+            out.append(f"{key}: {yaml_scalar(value)}\n")
             done = True
             continue
         out.append(line)
@@ -202,7 +237,7 @@ def cmd_new(cfg: Config, title: str) -> int:
     head.append(f"id: {ident}")
     head.append("status: proposed")
     head.append(f"date: {today}")
-    head.append(f"title: {title}")
+    head.append(f"title: {yaml_scalar(title)}")
     head.append("supersedes:")
     head.append("superseded_by:")
     head.append("applies_to:")

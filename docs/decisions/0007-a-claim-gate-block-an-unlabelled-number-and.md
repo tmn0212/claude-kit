@@ -2,7 +2,7 @@
 id: 0007
 status: accepted
 date: 2026-08-25
-title: A claim gate: block an unlabelled number, and bind a measured one to its source
+title: "A claim gate: block an unlabelled number, and bind a measured one to its source"
 supersedes:
 superseded_by:
 applies_to:

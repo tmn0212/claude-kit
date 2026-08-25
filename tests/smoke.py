@@ -364,6 +364,27 @@ def main() -> int:
     check("promote admits it wrote no row", "no table row there matched" in orphan.stdout,
           orphan.stdout)
 
+    # A title with a colon wrote invalid YAML front matter. The parser here is
+    # deliberately not YAML so nothing complained, until vale used a real one.
+    run(adr, ["new", "A claim gate: block an unlabelled number"], root)
+    colon = next(p for p in (root / "docs" / "decisions").glob("*.md")
+                 if "a-claim-gate" in p.name)
+    front = colon.read_text().split("---")[1]
+    check("a colon in a title is quoted", 'title: "A claim gate: block' in front, front[:200])
+    listed = run(adr, ["list"], root)
+    check("and reads back without the quotes",
+          "A claim gate: block an unlabelled number" in listed.stdout, listed.stdout)
+    try:
+        import tomllib  # noqa: F401
+        import yaml  # type: ignore
+
+        yaml.safe_load(front)
+        check("a real YAML parser accepts the front matter", True)
+    except ImportError:
+        pass  # pyyaml is not a dependency; vale is what catches this in practice
+    except Exception as exc:
+        check("a real YAML parser accepts the front matter", False, str(exc))
+
     # Bare `adr` crashed: --status lives only on the `list` subparser.
     bare = run(adr, [], root)
     check("bare adr does not crash", bare.returncode == 0 and "Traceback" not in bare.stderr,
@@ -536,6 +557,9 @@ def main() -> int:
               "id: 7" not in prose_impl.strip_md("---\nid: 7\n---\n\nBody.\n"))
         check("fenced code is stripped",
               "secret" not in prose_impl.strip_md("Text.\n\n```\nsecret\n```\n"))
+        # Six terminator-free bullets used to measure as one long sentence.
+        bullets = prose_impl.strip_md("- one\n- two\n- three\n")
+        check("a list item ends a sentence", bullets.count(".") >= 3, repr(bullets))
     except Exception as exc:  # pragma: no cover
         check("prose stripper importable", False, str(exc))
 

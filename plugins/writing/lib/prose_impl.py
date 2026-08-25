@@ -72,7 +72,13 @@ def strip_md(t):
     t = re.sub(r"^\s*>?\s*\|.*$", "", t, flags=re.M)             # tables, quoted or not
     t = re.sub(r"`([^`]*)`", r"\1", t)
     t = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", t)
-    t = re.sub(r"^\s*[-*+]\s+", "", t, flags=re.M)
+    # A list item ends a sentence, the same way a heading does. Stripping the
+    # marker and leaving the text bare ran a whole list together: six bullets
+    # with no full stops measured as one 43-word sentence. The house rule is
+    # that a bullet IS a sentence, so measuring it as one is the honest read,
+    # and the separate no-stop check still reports the missing punctuation.
+    t = re.sub(r"^\s*[-*+]\s+(.*?)\s*$", lambda m: m.group(1).rstrip(".,;:") + ".",
+               t, flags=re.M)
     # A heading ENDS a sentence. Stripping the `#` and leaving the text bare
     # runs the heading into the paragraph below it, so "## Context" followed by
     # a 24-word opener measured as one 30-word sentence. Every document with

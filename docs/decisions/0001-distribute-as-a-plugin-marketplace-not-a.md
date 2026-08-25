@@ -19,9 +19,9 @@ command-line tools.
 Three mechanisms were surveyed.
 
 - A plugin marketplace. One git repo holds `.claude-plugin/marketplace.json`
-  and the plugins; two commands install it. A plugin can ship skills, agents,
-  output styles, hooks, MCP servers, and a `bin/` directory that joins the Bash
-  tool's PATH while the plugin is enabled.
+  and the plugins, and two commands install it. A plugin ships skills,
+  agents, output styles, hooks, MCP servers, and a `bin/` directory that
+  joins the Bash tool's PATH while enabled.
 - An installer script, the shape already used by `claude-statusline-grid`:
   clone, run `install.sh`, copy into `~/.claude`, merge `settings.json`.
 - Symlinking `~/.claude` into a versioned repo.
@@ -39,12 +39,15 @@ maintain and Windows needs a second implementation.
 
 ### C. Symlink farm
 
-Rejected on evidence rather than taste. Four upstream issues were open at the
-time: Claude refuses to write through a symlinked `CLAUDE.md` as an intentional
-safety behaviour; symlinks in `.claude/rules/` pointing outside the project are
-not loaded, contradicting the documentation; `/skills` does not detect skills in
-symlinked directories; and marketplace `installLocation` is validated by string
-prefix rather than realpath.
+Rejected on evidence rather than taste. Four upstream issues were open at
+the time.
+
+- Claude refuses to write through a symlinked `CLAUDE.md`, as an
+  intentional safety behaviour.
+- Symlinks in `.claude/rules/` pointing outside the project are not
+  loaded, which contradicts the documentation.
+- `/skills` does not detect skills in symlinked directories.
+- Marketplace `installLocation` is validated by string prefix, not realpath.
 
 ## Decision
 

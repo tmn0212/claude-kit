@@ -1,0 +1,188 @@
+# Declarative cases for the guards and the gate.
+#
+# Every one of these was a bug at some point, or is the shape of a bug that was.
+# They live in a table rather than in code so that adding one costs a line: the
+# reason bugs kept surviving here was that each new case meant writing a test
+# function, and that friction is exactly what a case table removes.
+#
+# Run them alone, which takes about a second:
+#     python3 tests/cases.py
+# or as part of the full suite:
+#     python3 tests/smoke.py
+#
+# `allow` means the hook must produce nothing. `deny` means it must refuse.
+# Each case carries a `why`, because a case whose purpose nobody remembers is a
+# case that gets deleted the first time it is inconvenient.
+
+# ---------------------------------------------------------------- bash guard
+[[bash_guard.allow]]
+why = "no loop body at all; the word 'sleep' is inside a commit message"
+cmd = "git commit -m 'retry loop for the flaky sleep test'"
+
+[[bash_guard.allow]]
+why = "sleep is an argument to grep, not a command"
+cmd = 'for f in logs/*; do grep -c sleep "$f"; done'
+
+[[bash_guard.allow]]
+why = "the sleep is outside the loop body"
+cmd = "for f in *.c; do gcc -c $f; done && sleep 1"
+
+[[bash_guard.allow]]
+why = "a loop with no sleep is just a loop"
+cmd = "for f in *.c; do gcc -c $f; done"
+
+[[bash_guard.allow]]
+why = "a pattern that mentions both words is not a loop"
+cmd = "rg -n 'while|sleep' src/"
+
+[[bash_guard.allow]]
+why = "awk's own for() is not a shell loop"
+cmd = "awk '{for(i=1;i<=NF;i++)s+=$i}END{print s}' /var/log/sleep.log"
+
+[[bash_guard.allow]]
+why = "a repeater with no sleep anywhere"
+cmd = "find . -name '*.tmp' | xargs rm"
+
+[[bash_guard.allow]]
+why = "xargs feeding grep, where sleep is a search term"
+cmd = "ls | xargs grep -l sleep"
+
+[[bash_guard.allow]]
+why = "sh -c whose body does not sleep"
+cmd = "cat list | xargs -n1 sh -c 'echo \"$0\"'"
+
+[[bash_guard.allow]]
+why = "a deliberate paced retry, escaped at a command position"
+cmd = "ALLOW_POLL=1 until [ -s o ]; do sleep 1; done"
+
+[[bash_guard.deny]]
+why = "the plain shape: a loop whose body sleeps"
+cmd = "until [ -s out ]; do sleep 2; done"
+
+[[bash_guard.deny]]
+why = "usleep has no word boundary before 'sleep', which the old regex needed"
+cmd = "until [ -f done ]; do usleep 200000; done"
+
+[[bash_guard.deny]]
+why = "watch is polling with the loop moved into another program"
+cmd = "watch -n 5 'ls out'"
+
+[[bash_guard.deny]]
+why = "the escape must be an assignment, not the word inside a string"
+cmd = 'echo "prefix with ALLOW_POLL=1"; until [ -s o ]; do sleep 1; done'
+
+[[bash_guard.deny]]
+why = "a loop hidden inside sh -c has no do/done at the top level"
+cmd = "seq 100 | xargs -I{} sh -c 'sleep 2; test -f out'"
+
+[[bash_guard.deny]]
+why = "sh -c carrying the whole loop"
+cmd = "sh -c 'until [ -f out ]; do sleep 1; done'"
+
+# Heredocs. `pad` repeats a line to push the command past the line limit, so a
+# case stays readable instead of carrying forty literal lines.
+[[bash_guard.allow]]
+why = "a three-line one-liner is cheaper than creating a file"
+cmd = "python3 - <<'PY'\nprint(1)\nPY\n"
+
+[[bash_guard.allow]]
+why = "the interpreter and the << are in different command segments"
+cmd = "python3 -c 'print(1)' && cat > f.txt <<'EOF'\n"
+pad = "x\n"
+tail = "EOF\n"
+
+[[bash_guard.allow]]
+why = "a left shift never closes a delimiter, so it was never a heredoc"
+cmd = "python3 tool.py --shift '1<<20'\n"
+pad = "# pad\n"
+
+[[bash_guard.allow]]
+why = "writing a config inline is not the failure being fixed"
+cmd = "cat > f.txt <<'EOF'\n"
+pad = "x\n"
+tail = "EOF\n"
+
+[[bash_guard.deny]]
+why = "the shape being refused"
+cmd = "python3 - <<'PY'\n"
+pad = "x = 1\n"
+tail = "PY\n"
+
+[[bash_guard.deny]]
+why = "sqlite3 is an interpreter too"
+cmd = "sqlite3 db <<SQL\n"
+pad = "select 1;\n"
+tail = "SQL\n"
+
+# ---------------------------------------------------------------- claim gate
+[[claim_gate.deny]]
+why = "the plain shape: a multiplier, a comparison, no label"
+text = "The aligned path is 1.7x faster than the misaligned one."
+
+[[claim_gate.deny]]
+why = "a unit and an improvement claim"
+text = "Throughput improved to 21.9 MB/s after the rewrite."
+
+[[claim_gate.deny]]
+why = "a percentage regression"
+text = "That change made the endpoint 40% slower."
+
+[[claim_gate.allow]]
+why = "labelled, with a sample size"
+text = "The aligned path is 1.7x faster. `measured (n=3)`, bench case 2.1b."
+
+[[claim_gate.allow]]
+why = "an honest absence of evidence is a label"
+text = "It looks 2x faster, but that is not verified."
+
+[[claim_gate.allow]]
+why = "a number with no comparison is not a claim about performance"
+text = "The file is 200 lines and lives in src/."
+
+[[claim_gate.allow]]
+why = "numbers inside a fence are output that was produced, not an assertion"
+text = "Here is the output:\n\n```\n21.9 MB/s faster\n```\n\nThat is the log."
+
+[[claim_gate.allow]]
+why = "a comparison with no number cannot be checked against anything"
+text = "The aligned path is faster, and I have not measured it."
+
+[[claim_gate.allow]]
+why = "a version number is not a measurement"
+text = "We are on Python 3.12 and it works."
+
+[[claim_gate.allow]]
+why = "a line count in passing"
+text = "That module is 1200 lines, so it needs splitting."
+
+# ------------------------------------------------------------- kb query shapes
+# Every one of these raised an FTS5 syntax error at some point, and a syntax
+# error sends the reader back to grep, which is what kb exists to replace.
+[[kb_query.ok]]
+why = "a colon parsed as a column filter and matched nothing"
+query = "ratio 2:1"
+finds = "Zebra"
+
+[[kb_query.ok]]
+why = "parentheses are FTS5 syntax"
+query = "C++ (draft)"
+
+[[kb_query.ok]]
+why = "a leading star is a prefix operator with no term"
+query = "*args handling"
+
+[[kb_query.ok]]
+why = "a dangling boolean operator survived the tokenised retry"
+query = "a AND"
+
+[[kb_query.ok]]
+why = "nothing tokenises at all"
+query = "-"
+
+[[kb_query.ok]]
+why = "an alias written as a string was iterated character by character"
+query = "dma"
+
+[[kb_query.ok]]
+why = "a version string carries punctuation FTS5 treats as syntax"
+query = "v1.3 allkeys-lru"
