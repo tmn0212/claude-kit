@@ -273,9 +273,16 @@ def main() -> int:
     mx = run(guard, ["bash"], root, stdin=json.dumps({"tool_input": {"command": mixed}}))
     check("cat heredoc beside python is not denied", mx.stdout.strip() == "", mx.stdout)
 
+    # An unknown action also returns 0, so assert the action EXISTS before
+    # asserting it fails open. Otherwise this passes with an empty dispatch table.
+    known = (PLUGINS / "session-economics" / "hooks" / "guard.py").read_text()
     for action in ["read", "bash", "depth", "friction-pre", "friction-post", "session-start"]:
         junk = run(guard, [action], root, stdin="not json at all")
-        check(f"{action} fails open on garbage", junk.returncode == 0, junk.stderr)
+        check(
+            f"{action} fails open on garbage",
+            junk.returncode == 0 and junk.stderr.strip() == "" and f'"{action}"' in known,
+            junk.stderr,
+        )
 
     # `guards.enabled = false` must silence EVERY hook, not just the refusing
     # ones. A project with its own copies needs one switch; without it the two
@@ -349,6 +356,149 @@ def main() -> int:
     moved = root / "tools" / "latin.py"
     check("promote preserved a non-UTF-8 byte", moved.is_file() and b"\xe9" in moved.read_bytes(),
           repr(moved.read_bytes()[:40]) if moved.is_file() else "not moved")
+
+    # `promote` printed "the row is there" whether or not it had written one.
+    (root / "tools" / "scratch" / "orphan.py").write_text("print(2)\n")
+    (root / "docs" / "guides" / "tooling.md").write_text("# Tooling\n\nNo table here.\n")
+    orphan = run(promote, ["orphan.py"], root)
+    check("promote admits it wrote no row", "no table row there matched" in orphan.stdout,
+          orphan.stdout)
+
+    # Bare `adr` crashed: --status lives only on the `list` subparser.
+    bare = run(adr, [], root)
+    check("bare adr does not crash", bare.returncode == 0 and "Traceback" not in bare.stderr,
+          bare.stderr)
+
+    # fm_write walked past an unclosed fence and rewrote matching body lines.
+    broken = root / "docs" / "decisions" / "0009-unclosed.md"
+    broken.write_text("---\nid: 0009\nstatus: proposed\n\n# no fence\n\nstatus: prose line\n")
+    run(adr, ["accept", "9"], root)
+    check("unclosed front matter is refused, not mangled",
+          "status: prose line" in broken.read_text(), broken.read_text())
+    broken.unlink()
+
+    # A one-line status change must not rewrite the body.
+    fenced = root / "docs" / "decisions" / "0010-fenced.md"
+    fenced.write_text(
+        "---\nid: 0010\nstatus: proposed\ndate: 2026-01-01\ntitle: T\n---\n\nstatus: prose\n"
+    )
+    run(adr, ["accept", "10"], root)
+    body = fenced.read_text()
+    check("status change left the body alone",
+          "status: accepted" in body and "status: prose" in body, body)
+    fenced.unlink()
+
+    # The poll guard denied ordinary commands and missed real loops.
+    must_pass = [
+        "git commit -m 'retry loop for the flaky sleep test'",
+        "for f in logs/*; do grep -c sleep \"$f\"; done",
+        "for f in *.c; do gcc -c $f; done && sleep 1",
+        "rg -n 'while|sleep' src/",
+        "awk '{for(i=1;i<=NF;i++)s+=$i}END{print s}' /var/log/sleep.log",
+    ]
+    for command in must_pass:
+        got = run(guard, ["bash"], root, stdin=json.dumps({"tool_input": {"command": command}}))
+        check(f"allowed: {command[:44]}", got.stdout.strip() == "", got.stdout)
+
+    must_deny = [
+        "until [ -f done ]; do usleep 200000; done",
+        "watch -n 5 'ls out'",
+        'while ! grep -q DONE /tmp/log; do echo "' + "x" * 420 + '"; sleep 5; done',
+        'echo "prefix with ALLOW_POLL=1"; until [ -s o ]; do sleep 1; done',
+    ]
+    for command in must_deny:
+        got = run(guard, ["bash"], root, stdin=json.dumps({"tool_input": {"command": command}}))
+        check(f"denied: {command[:44]}", '"deny"' in got.stdout, got.stdout)
+
+    escape = run(guard, ["bash"], root, stdin=json.dumps(
+        {"tool_input": {"command": "ALLOW_POLL=1 until [ -s o ]; do sleep 1; done"}}))
+    check("a real ALLOW_POLL=1 assignment escapes", escape.stdout.strip() == "", escape.stdout)
+
+    # The heredoc guard fired on a left-shift and on a cat heredoc beside python.
+    shift = "python3 tool.py --shift '1<<20'\n" + "# pad\n" * 40
+    got = run(guard, ["bash"], root, stdin=json.dumps({"tool_input": {"command": shift}}))
+    check("a left-shift is not a heredoc", got.stdout.strip() == "", got.stdout)
+
+    mixed_one_line = "python3 -c 'print(1)' && cat > f.txt <<'EOF'\n" + "x\n" * 40 + "EOF\n"
+    got = run(guard, ["bash"], root, stdin=json.dumps({"tool_input": {"command": mixed_one_line}}))
+    check("cat heredoc after python on one line is allowed", got.stdout.strip() == "", got.stdout)
+
+    real = "sqlite3 db <<SQL\n" + "select 1;\n" * 40 + "SQL\n"
+    got = run(guard, ["bash"], root, stdin=json.dumps({"tool_input": {"command": real}}))
+    check("a long sqlite3 heredoc is denied", '"deny"' in got.stdout, got.stdout)
+
+    # The read guard named a subject kb does not know, and ignored skip_dirs.
+    generic_dir = root / "docs" / "architecture"
+    generic_dir.mkdir(parents=True, exist_ok=True)
+    generic_doc = generic_dir / "README.md"
+    generic_doc.write_text("# Arch\n\n" + ("filler paragraph. " * 4000))
+    got = run(guard, ["read"], root,
+              stdin=json.dumps({"tool_input": {"file_path": str(generic_doc)}}))
+    check("read guard names the real subject", "architecture-readme" in got.stdout, got.stdout)
+
+    skipped_dir = root / "docs" / "_out"
+    skipped_dir.mkdir(parents=True, exist_ok=True)
+    skipped_doc = skipped_dir / "report.md"
+    skipped_doc.write_text("# Report\n\n" + ("filler paragraph. " * 4000))
+    got = run(guard, ["read"], root,
+              stdin=json.dumps({"tool_input": {"file_path": str(skipped_doc)}}))
+    check("read guard ignores a skipped directory", got.stdout.strip() == "", got.stdout)
+
+    for value in (False, 0):
+        got = run(guard, ["read"], root, stdin=json.dumps(
+            {"tool_input": {"file_path": str(big), "offset": value}}))
+        expected = value is not False  # an int bounds the read; a bool does not
+        check(f"offset={value!r} bounds the read: {expected}",
+              (got.stdout.strip() == "") is expected, got.stdout)
+
+    # The index regressions need a project that has NEVER been built, because
+    # the bug was that asking about the index created a broken one. Doing this
+    # in the main project would be hidden by the `kb build` at the top.
+    print("\nindex regressions")
+    fresh = workdir / "fresh"
+    (fresh / "docs" / "decisions").mkdir(parents=True)
+    (fresh / "claude-kit.toml").write_text(
+        '[kb]\nsources = ["docs", "docs"]\nextensions = [".md"]\n\n'
+        '[kb.aliases]\ndma = "direct memory access"\n\n'
+        '[adr]\ndir = "docs/decisions"\n'
+    )
+    (fresh / "docs" / "note.md").write_text(
+        "# Note\n\n## Zebra\n\nZebras are striped, ratio 2:1.\n"
+    )
+    subprocess.run(["git", "init", "-q"], cwd=str(fresh), capture_output=True)
+
+    # `kb stale` connected before checking, and sqlite3.connect CREATES the file.
+    # `brief` runs `kb stale` at session start, so the index was permanently
+    # broken before anyone ever searched.
+    run(brief, [], fresh)
+    hits = run(kb, ["search", "zebra"], fresh)
+    check("search works after brief ran first", "KB OK" in hits.stdout, hits.stdout + hits.stderr)
+    check("no empty index left behind",
+          (fresh / ".kb.sqlite").stat().st_size > 0 if (fresh / ".kb.sqlite").exists() else False)
+
+    # A duplicated source made walk() yield twice; build dropped the duplicate
+    # and stale counted it, so every query rebuilt the whole index.
+    run(kb, ["build"], fresh)
+    drift = run(kb, ["stale"], fresh)
+    check("no phantom drift after a build", "index is current" in drift.stdout, drift.stdout)
+
+    # A punctuated question must return RESULTS, not merely avoid an error.
+    punct = run(kb, ["search", "ratio 2:1"], fresh)
+    check("a colon query still finds the section", "Zebra" in punct.stdout,
+          punct.stdout + punct.stderr)
+    for query in ["C++ (draft)", "*args handling", "a AND", "-"]:
+        got = run(kb, ["search", query], fresh)
+        check(f"no syntax error for {query!r}", "bad query" not in got.stderr, got.stderr)
+
+    # An alias written as a string was iterated character by character.
+    alias = run(kb, ["search", "dma"], fresh)
+    check("a string alias is one phrase, not 20 letters",
+          "bad query" not in alias.stderr and alias.returncode == 0, alias.stderr)
+
+    # pack with a nonsense budget sliced from the end and called it truncated.
+    for value in ["0", "-10"]:
+        got = run(kb, ["pack", "zebra", "--budget", value], fresh)
+        check(f"pack survives --budget {value}", "KB OK" in got.stdout, got.stdout + got.stderr)
 
     # --- result -------------------------------------------------------------
     print()

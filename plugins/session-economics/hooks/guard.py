@@ -140,9 +140,14 @@ def hook_read() -> None:
     if not path:
         return
 
-    # An explicit offset or limit is a deliberate, bounded read. Always allow it.
+    # An explicit offset or limit is a deliberate, bounded read. Always allow
+    # it. An INTEGER, specifically: `is not None` let `false` through while
+    # rejecting `null`, so two spellings of the same nonsense disagreed.
     tool_input = data.get("tool_input") or {}
-    if tool_input.get("offset") is not None or tool_input.get("limit") is not None:
+    if any(
+        isinstance(tool_input.get(key), int) and not isinstance(tool_input.get(key), bool)
+        for key in ("offset", "limit")
+    ):
         return
 
     if cfg is None:
@@ -157,6 +162,11 @@ def hook_read() -> None:
         return
     if not any(relative.startswith(s + "/") for s in sources):
         return
+    # A document inside a skipped directory was never indexed, so refusing the
+    # Read would name a `kb` command that cannot work. Let it through.
+    skip = set(setting(cfg, "kb.skip_dirs", []))
+    if any(part in skip for part in Path(relative).parts[:-1]):
+        return
 
     threshold = int(setting(cfg, "guards.read_bytes", 24000))
     try:
@@ -166,7 +176,12 @@ def hook_read() -> None:
     if size <= threshold:
         return
 
-    subject = Path(path).stem
+    # The same rule kb uses: a generic stem takes its directory name, so a
+    # 50 KB docs/architecture/README.md is subject `architecture-readme`, not
+    # `README`. Naming the wrong subject makes both suggested commands miss.
+    generic = {str(s).lower() for s in setting(cfg, "kb.generic_stems", [])}
+    stem = Path(path).stem
+    subject = f"{Path(path).parent.name}-{stem.lower()}" if stem.lower() in generic else stem
     deny(
         "PreToolUse",
         f"{relative} is ~{size // 4} tokens, and a Read result is re-billed on "
@@ -182,8 +197,28 @@ def hook_read() -> None:
 
 # --- 2. bash guard --------------------------------------------------------
 
-_POLL = re.compile(r"\b(until|while|for)\b[\s\S]{0,400}?\bsleep\b", re.I)
-_HEREDOC = re.compile(r"\b(python3?|node|perl|ruby|bun|deno)\b[^\n]*<<")
+# A polling loop is a loop whose BODY sleeps. Both halves are load-bearing.
+# The previous version matched any loop keyword within 400 characters of the
+# word "sleep", which denied `git commit -m 'retry loop for the flaky sleep
+# test'` and `for f in logs/*; do grep -c sleep "$f"; done`, while missing
+# `until ...; do usleep 1; done` (no word boundary before "sleep") and any loop
+# whose body ran past the window.
+_LOOP_BODY = re.compile(r"\b(?:until|while|for)\b[^\n]{0,300}?\bdo\b(.*?)\bdone\b", re.S)
+# A sleep at a COMMAND position, so `grep -c sleep file` is not one.
+_SLEEP_CALL = re.compile(r"(?:^|[;&|(]|&&|\|\||\bdo\b|\bthen\b)\s*u?sleep\b")
+# `watch` is polling with the loop moved into another program.
+_WATCH = re.compile(r"(?:^|[;&|]|&&)\s*watch\s+")
+# The escape must be an assignment, not the word appearing inside a string.
+_ALLOW_POLL = re.compile(r"(?:^|[;&|]|&&)\s*ALLOW_POLL=1\b")
+# An interpreter heredoc. `[^\n;&|]*` keeps the interpreter and the `<<` in one
+# command, so `python3 -c '...' && cat > f <<EOF` is not a match. The delimiter
+# is captured and must also appear alone on a later line, which is what
+# separates a real heredoc from a left-shift like `--shift '1<<20'`.
+_HEREDOC = re.compile(
+    r"\b(?:python3?|node|perl|ruby|bun|deno|ipython|sqlite3)\b"
+    r"[^\n;&|]*<<-?\s*[\'\"]?(\w+)[\'\"]?\s*$",
+    re.M,
+)
 
 
 def hook_bash() -> None:
@@ -207,7 +242,10 @@ def hook_bash() -> None:
     if not command:
         return
 
-    if "ALLOW_POLL=1" not in command and _POLL.search(command):
+    polling = bool(_WATCH.search(command)) or any(
+        _SLEEP_CALL.search(body) for body in _LOOP_BODY.findall(command)
+    )
+    if polling and not _ALLOW_POLL.search(command):
         deny(
             "PreToolUse",
             "This is a hand-rolled polling loop. Nothing needs polling here:\n\n"
@@ -220,7 +258,8 @@ def hook_bash() -> None:
         return
 
     limit = int(setting(cfg, "guards.heredoc_lines", 25))
-    if _HEREDOC.search(command):
+    found = _HEREDOC.search(command)
+    if found and re.search(rf"^\s*{re.escape(found.group(1))}\s*$", command, re.M):
         lines = command.count("\n") + 1
         if lines > limit:
             scratch = setting(cfg, "promote.scratch", "tools/scratch")
@@ -364,9 +403,9 @@ def friction_dir(cfg) -> Path | None:
     try:
         if not directory.exists():
             directory.mkdir(parents=True, exist_ok=True)
-            (cfg.root / "log" / ".gitignore").write_text(
-                LOG_GITIGNORE, encoding="utf-8", newline="\n"
-            )
+        ignore = cfg.root / "log" / ".gitignore"
+        if not ignore.exists():
+            ignore.write_text(LOG_GITIGNORE, encoding="utf-8", newline="\n")
     except OSError:
         return None
     return directory

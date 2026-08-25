@@ -114,12 +114,43 @@ class Kb:
         db.row_factory = sqlite3.Row
         return db
 
+    def healthy(self) -> bool:
+        """Whether the index file exists AND holds a usable schema.
+
+        Existence alone is not enough, and assuming it was the worst bug this
+        tool has had: `sqlite3.connect` CREATES an empty file, so any read path
+        that connected before checking left a 0-byte database behind. The build
+        path then saw a file present, skipped the build, and every query failed
+        with `no such table: fts` until somebody ran `kb build` by hand.
+        """
+        try:
+            if not self.db_path.exists() or self.db_path.stat().st_size == 0:
+                return False
+        except OSError:
+            return False
+        try:
+            db = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+            try:
+                db.execute("SELECT 1 FROM doc LIMIT 1").fetchone()
+                db.execute("SELECT 1 FROM fts LIMIT 1").fetchone()
+            finally:
+                db.close()
+            return True
+        except sqlite3.Error:
+            return False
+
     def walk(self):
         """Yield (source, relpath, abspath) for every document in the index.
 
         One definition, used by both the builder and the staleness check, so
         those two can never disagree about what "indexed" means.
         """
+        # One yield per relative path. Without this, a config naming the same
+        # tree twice ("docs" and "docs/", which strip() makes identical) yields
+        # every file twice; build() drops the duplicate with INSERT OR IGNORE
+        # while stale() counts it, so the index reports drift forever and every
+        # single query pays for a full rebuild.
+        seen: set[str] = set()
         for src in self.sources:
             base = self.root / src
             if not base.is_dir():
@@ -139,6 +170,14 @@ class Kb:
                         for other in self.sources
                     ):
                         continue
+                    if relative in seen:
+                        continue
+                    # A file build() cannot read is a file it will not index, so
+                    # counting it here as "added" is the other half of the same
+                    # disagreement. Skip it in both places or in neither.
+                    if not os.access(path, os.R_OK):
+                        continue
+                    seen.add(relative)
                     yield src, relative, path
 
     def subject_of(self, path: Path, src: str) -> str:
@@ -239,14 +278,24 @@ class Kb:
 
     # -- freshness ---------------------------------------------------------
     def stale(self):
-        """(added, changed, removed): the filesystem against the index."""
+        """(added, changed, removed): the filesystem against the index.
+
+        Opens read-only through a URI, so a missing index stays missing rather
+        than being created as an empty file by the act of asking about it.
+        """
+        if not self.healthy():
+            return sorted(relative for _s, relative, _p in self.walk()), [], []
         try:
-            db = self.connect()
-            indexed = {
-                r["path"]: (r["mtime"], r["size"])
-                for r in db.execute("SELECT path, mtime, size FROM doc")
-            }
-        except sqlite3.OperationalError:
+            db = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+            db.row_factory = sqlite3.Row
+            try:
+                indexed = {
+                    r["path"]: (r["mtime"], r["size"])
+                    for r in db.execute("SELECT path, mtime, size FROM doc")
+                }
+            finally:
+                db.close()
+        except sqlite3.Error:
             return [], [], []
         added, changed = [], []
         for _src, relative, path in self.walk():
@@ -289,14 +338,36 @@ class Kb:
         return True
 
     def ready(self) -> None:
-        if not self.db_path.exists():
-            sys.stderr.write("kb: no index yet, building one\n")
+        if not self.healthy():
+            sys.stderr.write("kb: no usable index, building one\n")
             self.build(quiet=True)
         else:
             self.refresh()
 
     # -- query -------------------------------------------------------------
-    def fts_query(self, query: str) -> str:
+    def match(self, db, sql: str, query: str, tail: tuple = ()):
+        """Run an FTS query, retrying with a tokenised form on a syntax error.
+
+        `fts_query` passes a deliberate FTS5 expression through untouched, but a
+        plausible question looks like one: `ratio 2:1` has a colon, `C++ (draft)`
+        has parentheses. Both raise, and a syntax error sends the reader back to
+        grep, which is the failure this whole tool exists to prevent. So the
+        passthrough is a guess, and this un-guesses it.
+        """
+        error = None
+        for attempt in (self.fts_query(query), self.fts_query(query, tokens_only=True)):
+            if attempt is None:
+                # Nothing in the query tokenises, so there is nothing to ask.
+                # Running it anyway is a syntax error, and a syntax error sends
+                # the reader back to grep.
+                return []
+            try:
+                return db.execute(sql, (attempt, *tail)).fetchall()
+            except sqlite3.OperationalError as exc:
+                error = exc
+        raise error
+
+    def fts_query(self, query: str, tokens_only: bool = False) -> str | None:
         """Turn a human question into valid FTS5.
 
         Two rules, both learned from queries that failed:
@@ -308,33 +379,56 @@ class Kb:
            sends the reader straight back to grep, which is the failure this
            tool exists to prevent.
         """
-        if query.count('"') % 2 == 0 and re.search(r'["():*]|\b(AND|OR|NOT|NEAR)\b', query):
+        # Pass through only what is UNAMBIGUOUSLY a deliberate expression: a
+        # boolean operator, or a balanced quoted phrase. The old test also fired
+        # on a bare `:`, `(` or `*`, which made `ratio 2:1` a column filter that
+        # parsed and matched nothing - worse than an error, because it looked
+        # like an answer.
+        if (
+            not tokens_only
+            and query.count('"') % 2 == 0
+            and (re.search(r'"[^"]+"', query) or re.search(r"\b(AND|OR|NOT|NEAR)\b", query))
+        ):
             return query
         terms = []
         for token in query.split():
             if not re.search(r"\w", token):
                 continue
-            one = token if re.fullmatch(r"\w+", token) else '"%s"' % token.replace('"', "")
+            # Quote EVERYTHING on the retry. A bare `AND` is an operator, so the
+            # fallback for a query containing one has to be total or it fails
+            # exactly where it is needed most.
+            if tokens_only or not re.fullmatch(r"\w+", token):
+                one = '"%s"' % token.replace('"', "")
+            else:
+                one = token
             alias = self.aliases.get(token.lower().strip('"'))
+            # A string is one alias, not a sequence of letters. Writing
+            # `dma = "direct memory access"` is the natural spelling, and
+            # iterating it produced a 20-way OR of single characters that
+            # matched every document in the index.
+            if isinstance(alias, str):
+                alias = [alias]
             if alias:
                 group = [one] + [
                     a if re.fullmatch(r"\w+", a) else '"%s"' % a for a in alias
                 ]
                 one = "(" + " OR ".join(group) + ")"
             terms.append(one)
-        return " OR ".join(terms) if terms else query
+        return " OR ".join(terms) if terms else None
 
     def search(self, query: str, limit: int = 12) -> int:
         db = self.connect()
         try:
-            rows = db.execute(
+            rows = self.match(
+                db,
                 """
                 SELECT d.path, d.subject, s.heading, s.line,
                        snippet(fts, 1, '>>>', '<<<', ' ... ', 24) AS snip
                 FROM fts JOIN section s ON s.id = fts.rowid JOIN doc d ON d.id = s.doc_id
                 WHERE fts MATCH ? ORDER BY bm25(fts) LIMIT ?""",
-                (self.fts_query(query), limit),
-            ).fetchall()
+                query,
+                (limit,),
+            )
         except sqlite3.OperationalError as exc:
             sys.stderr.write(f"error: bad query: {exc}\n")
             sys.stderr.write('       FTS5 syntax: bare words, "quoted phrase", AND/OR/NOT\n')
@@ -369,15 +463,17 @@ class Kb:
             # Restricted to documents carrying a record number, which excludes
             # the generated index: it matches every decision query and is a
             # decision about nothing.
-            rows = db.execute(
+            rows = self.match(
+                db,
                 """
                 SELECT DISTINCT d.id, d.path, d.subject
                 FROM fts JOIN section s ON s.id = fts.rowid JOIN doc d ON d.id = s.doc_id
                 JOIN docmeta m ON m.doc_id = d.id AND m.key = 'id'
                 WHERE fts MATCH ? AND d.path LIKE ?
                 ORDER BY bm25(fts) LIMIT ?""",
-                (self.fts_query(topic), self.decisions + "/%", limit),
-            ).fetchall()
+                topic,
+                (self.decisions + "/%", limit),
+            )
         except sqlite3.OperationalError as exc:
             sys.stderr.write(f"error: bad query: {exc}\n")
             return 2
@@ -408,7 +504,12 @@ class Kb:
                     "SELECT DISTINCT target FROM ref WHERE src = ? AND kind = 'path' ORDER BY target",
                     (row_["id"],),
                 )
+                # Excluding the decisions tree explicitly, because the default
+                # evidence list is "every source", and the decisions directory is
+                # normally NESTED inside one of them rather than equal to one. A
+                # decision citing another decision is not evidence for itself.
                 if any(t["target"].startswith(e + "/") for e in self.evidence)
+                and not (self.decisions and t["target"].startswith(self.decisions + "/"))
             ]
             if cites:
                 print("    rests on:")
@@ -558,15 +659,19 @@ class Kb:
         left out with the command to fetch each piece. Being told precisely what
         was elided is what makes a truncated answer safe to act on.
         """
+        # A budget at or below zero slices from the END of a section and calls
+        # the result truncated, which is worse than useless.
+        budget = max(50, budget)
         db = self.connect()
         try:
-            rows = db.execute(
+            rows = self.match(
+                db,
                 """
                 SELECT d.path, d.subject, s.heading, s.line, s.body
                 FROM fts JOIN section s ON s.id = fts.rowid JOIN doc d ON d.id = s.doc_id
                 WHERE fts MATCH ? ORDER BY bm25(fts) LIMIT 40""",
-                (self.fts_query(topic),),
-            ).fetchall()
+                topic,
+            )
         except sqlite3.OperationalError as exc:
             sys.stderr.write(f"error: bad query: {exc}\n")
             return 2
@@ -581,7 +686,7 @@ class Kb:
             bookkeeping. Its two useful fields are status and title, and status
             is the one a session most needs: acting on a `proposed` decision as
             though it were `accepted` is a real error."""
-            if row_["heading"] == "(preamble)" and decisions and row_["path"].startswith(decisions):
+            if row_["heading"] == "(preamble)" and is_decision(row_):
                 meta = parse_frontmatter(row_["body"]) or {}
                 if meta.get("title"):
                     return (
@@ -594,7 +699,9 @@ class Kb:
             return max(1, len(body_of(row_)) // 4)
 
         def is_decision(row_):
-            return bool(decisions) and row_["path"].startswith(decisions)
+            # The trailing slash matters: without it `docs/decisions-archive/`
+            # reads as a decision and outranks real evidence in the ordering.
+            return bool(decisions) and row_["path"].startswith(decisions + "/")
 
         # A decision outranks evidence: it is the thing a session most often
         # needs and most often re-derives.

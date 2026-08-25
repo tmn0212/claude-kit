@@ -98,8 +98,14 @@ def _merge(base: dict, over: dict) -> dict:
 
 
 def find_root(start: str | os.PathLike | None = None) -> Path:
-    """The project root: the nearest ancestor with a config file, else a repo."""
-    here = Path(start or os.environ.get("CLAUDE_PROJECT_DIR") or Path.cwd()).resolve()
+    """The project root: the nearest ancestor with a config file, else a repo.
+
+    The working directory wins when no start is given. CLAUDE_PROJECT_DIR is
+    NOT consulted here on purpose: the hooks pass it explicitly, and letting it
+    override the cwd meant that running a tool inside project B during a
+    session rooted at project A quietly answered about A.
+    """
+    here = Path(start or Path.cwd()).resolve()
     if here.is_file():
         here = here.parent
     for candidate in [here, *here.parents]:
@@ -131,8 +137,15 @@ class Config:
         return node
 
     def path(self, dotted: str, default=None) -> Path:
-        """A configured relative path, joined to the root and normalised."""
+        """A configured relative path, joined to the root and normalised.
+
+        Raises on an unset key rather than returning `<root>/None`, which is a
+        plausible-looking path that silently does not exist and turns a typo
+        into a mystery instead of an error.
+        """
         value = self.get(dotted, default)
+        if value is None:
+            raise KeyError(f"claude-kit: no path configured for '{dotted}'")
         return (self.root / str(value)).resolve()
 
     @property
@@ -157,7 +170,10 @@ class Config:
                 )
             else:
                 with open(path, "rb") as handle:
-                    data = _merge(DEFAULTS, tomllib.load(handle))
+                    # Merge onto a COPY. `_merge` only rebuilds the sections
+                    # the file mentions, so every other section would still
+                    # be the module's own dict, shared with the next load.
+                    data = _merge(copy.deepcopy(DEFAULTS), tomllib.load(handle))
         return cls(root, data)
 
 

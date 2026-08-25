@@ -138,15 +138,19 @@ def main(argv: list[str] | None = None) -> int:
         print("  added a shebang (there was none)")
 
     registry = cfg.get("promote.registry")
-    if registry and register(root / registry, name, dest_label):
+    registered = bool(registry) and register(root / registry, name, dest_label)
+    if registered:
         print(f"  added a row to {registry}, replace the TODO with a real description")
 
     print()
     print(f"promoted: {rel(src, root)} -> {rel(dest, root)}" + ("" if tracked else "  (not tracked by git)"))
     print()
     print("Before committing, three things this script cannot do for you:")
-    if registry:
+    if registered:
         print(f"  1. Describe it in {registry} (the row is there, the description is TODO).")
+    elif registry:
+        print(f"  1. Add it to {registry} yourself: no table row there matched")
+        print(f"     `| \u0060{dest_label}/...\u0060 |`, so there was nowhere to insert one.")
     else:
         print("  1. Describe it wherever this project lists its tools.")
     print("  2. Print a success signal. Every tool here ends with a greppable line")

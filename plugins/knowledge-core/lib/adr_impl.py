@@ -69,23 +69,27 @@ def fm_read(path: Path) -> dict:
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     if not lines or lines[0].strip() != "---":
         return meta
+    # Block-list items accumulate in a SEPARATE dict. Stashing them in `meta`
+    # under a suffixed key renamed any real key that happened to end in that
+    # suffix, and handed back a list where every consumer formats a string.
+    blocks: dict[str, list[str]] = {}
     key = None
     for line in lines[1:]:
         if line.strip() == "---":
             break
         if line.lstrip().startswith("- ") and key:
-            meta.setdefault(key + "__list", []).append(line.lstrip()[2:].strip())
+            blocks.setdefault(key, []).append(line.lstrip()[2:].strip())
             continue
         if ":" not in line:
             continue
         key, _, value = line.partition(":")
         key = key.strip()
         meta[key] = value.strip()
-    for key in [k for k in meta if k.endswith("__list")]:
-        base = key[: -len("__list")]
-        if not meta.get(base):
-            meta[base] = meta[key]
-        del meta[key]
+    for name, items in blocks.items():
+        if not meta.get(name):
+            # Joined, not nested: these are only ever read as a set of globs,
+            # and every caller prints the value straight into a table cell.
+            meta[name] = " ".join(items)
     return meta
 
 
@@ -94,6 +98,11 @@ def fm_write(path: Path, key: str, value: str) -> None:
     lines = text.splitlines(keepends=True)
     if not lines or lines[0].strip() != "---":
         raise AdrError(f"{path.name}: no front matter to edit")
+    # Refuse an unclosed fence rather than editing past it. Without this check
+    # `inside` never clears, so every later line whose `key:` prefix matches is
+    # rewritten too - and a malformed record is exactly the case that gets here.
+    if not any(line.strip() == "---" for line in lines[1:]):
+        raise AdrError(f"{path.name}: front matter has no closing ---, refusing to edit")
     out, inside, done = [], True, False
     out.append(lines[0])
     for line in lines[1:]:
@@ -314,10 +323,12 @@ def cmd_check(cfg: Config) -> int:
         meta = fm_read(path)
         name_id = path.name[:4]
         if not meta.get("id"):
-            print(f"  {path}: no front matter")
+            # Reported, but NOT skipped. Bailing here hid every other problem in
+            # the same record, so fixing one meant running check again to find
+            # the next.
+            print(f"  {path}: no id in front matter")
             problems += 1
-            continue
-        if meta["id"] != name_id:
+        elif meta["id"] != name_id:
             print(f"  {path}: front-matter id '{meta['id']}' does not match filename '{name_id}'")
             problems += 1
         if meta.get("status") not in valid:
@@ -390,7 +401,9 @@ def main(argv: list[str] | None = None) -> int:
         if command == "new":
             return cmd_new(cfg, " ".join(args.title))
         if command == "list":
-            return cmd_list(cfg, args.status)
+            # getattr, because `--status` exists only on the `list` subparser
+            # and the default command is `list` with no subparser at all.
+            return cmd_list(cfg, getattr(args, "status", None))
         if command == "open":
             return cmd_list(cfg, "proposed")
         if command == "accept":
