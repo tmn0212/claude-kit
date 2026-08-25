@@ -79,11 +79,17 @@ _CFG = Config.load()
 
 ROOT = _CFG.root
 
-# The harness encodes the project path by replacing every separator and '_'
-# with '-'. The backslash matters: on Windows str(ROOT) contains no forward
-# slashes at all, so a class of just [/_] leaves the path unrecognisable and
-# the transcript directory is never found.
-TRANSCRIPTS = Path.home() / ".claude" / "projects" / re.sub(r"[/\\_]", "-", str(ROOT))
+# The harness encodes the project path by replacing every character that is not
+# a letter or a digit with '-'. Naming the separators individually is what broke
+# this on Windows: it left the drive colon in place, so `C:\Users\x` came out as
+# `C:-Users-x`, and pathlib reads a leading `C:` as a drive and discards
+# everything joined before it. The directory looked for was
+# `~/.claude/projects/-Users-x`, which never exists, and tokencost reported "no
+# transcripts" on every Windows project.
+# Honour CLAUDE_CONFIG_DIR the way prose and the installer already do: a user who
+# moved their config directory has no transcripts under ~/.claude at all.
+_CONFIG_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude"))
+TRANSCRIPTS = _CONFIG_DIR / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(ROOT))
 
 # Programs that do nothing on their own: the subcommand is the real identity.
 MULTIPLEXERS = {

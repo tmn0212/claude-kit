@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Report where agent sessions actually spend wall-clock time, and what they gave up on.
 
-Reads log/friction/commands.jsonl, written by the hooks in tools/hooks/. Those hooks
-capture; this derives. Nothing here asserts that a command is slow: it reports what
-was measured.
+Reads log/friction/commands.jsonl, written by this plugin's own PreToolUse and
+PostToolUse hooks. Those hooks capture; this derives. Nothing here asserts that a
+command is slow: it reports what was measured.
 
     friction                 full report
     friction --brief         the few lines the session brief embeds
@@ -315,7 +315,9 @@ def main():
         if not args.brief:
             print("No friction data yet.")
             print(f"  Expected: {LOG}")
-            print("  The hooks in tools/hooks/ populate it; check .claude/settings.json is wired.")
+            print("  This plugin's Bash hooks populate it, one line per command, once you")
+            print("  run something. If it stays empty, check session-economics is enabled:")
+            print("    claude plugin list")
             print("FRICTION OK")
         return 0
 

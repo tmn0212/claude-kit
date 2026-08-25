@@ -17,6 +17,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -378,6 +379,30 @@ def main() -> int:
         if "for %%I in" not in body:
             bad_cmd.append(cmd.name)
     check("every .cmd uses the batch-file %%I form", not bad_cmd, ", ".join(bad_cmd))
+
+    # The harness names a transcript directory after the project path with every
+    # non-alphanumeric character replaced by '-', so `C:\\Users\\x` is `C--Users-x`.
+    # Two tools enumerated the separators instead ([/\\_]) and so left the Windows
+    # drive colon in place. `C:-Users-x` is worse than merely wrong: pathlib reads
+    # a leading `C:` as a drive and discards whatever it was joined onto, so the
+    # lookup silently became `~/.claude/projects/-Users-x` and every Windows
+    # project reported "no transcripts". Assert the rule, not one spelling of it.
+    slug_sites = [
+        PLUGINS / "session-economics" / "lib" / "tokencost_impl.py",
+        PLUGINS / "writing" / "lib" / "prose_impl.py",
+    ]
+    win = r"C:\Users\dev\my_proj"
+    bad_slug = []
+    for site in slug_sites:
+        body = site.read_text(encoding="utf-8", errors="replace")
+        rules = re.findall(r're\.sub\(r"(\[[^"]*\])", "-"', body)
+        if not rules:
+            bad_slug.append(f"{site.name}: no project-path rule found")
+            continue
+        for rule in rules:
+            if re.sub(rule, "-", win) != "C--Users-dev-my-proj":
+                bad_slug.append(f"{site.name}: {rule} -> {re.sub(rule, '-', win)}")
+    check("the project-path rule survives a Windows drive letter", not bad_slug, "; ".join(bad_slug))
 
     # `adr index` wrote its README unconditionally, destroying a hand-written one.
     handwritten = root / "docs" / "decisions" / "README.md"

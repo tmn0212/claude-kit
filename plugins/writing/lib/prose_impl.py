@@ -299,10 +299,11 @@ def corpus(d):
 
 
 def default_dir():
-    # Claude Code flattens the project path AND replaces underscores. The
-    # backslash in the class is what makes this work on Windows, where the
-    # working directory contains no forward slashes at all.
-    cwd = re.sub(r"[/\\_]", "-", os.getcwd())
+    # Claude Code flattens the project path, replacing every character that is
+    # not a letter or a digit with '-'. Naming the separators individually is
+    # what broke this on Windows: it left the drive colon in place, so the
+    # directory looked for was `C:-Users-...` and the real one is `C--Users-...`.
+    cwd = re.sub(r"[^A-Za-z0-9]", "-", os.getcwd())
     # Honour CLAUDE_CONFIG_DIR the way the installer does: a user who moved
     # their config directory has no transcripts under ~/.claude at all.
     base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
