@@ -141,6 +141,24 @@ from your own transcripts, which is what makes the numbers yours.
 installs them. Vale is optional and separate: without it, `prose lint` is
 skipped and everything else still works.
 
+**Commit messages get their own limits.** They are read in a fixed-width list
+far more often than they are written, so the reply thresholds do not fit:
+
+```sh
+prose commit .git/COMMIT_EDITMSG   # subject 72, body 100 words, wrap 72
+prose commit --install-hook        # wire it into this repo as commit-msg
+```
+
+It also refuses the trailers a generated commit adds, `Co-Authored-By: Claude`
+and the rest, which say nothing about the change. Claude Code has its own
+switch for that one, `includeCoAuthoredBy: false`; the check is what catches a
+message that carries it anyway.
+
+Nothing is enforced until you install the hook, and it is a plain file at
+`.git/hooks/commit-msg` that you delete to remove. Git comment lines and the
+`--verbose` diff are ignored, because git strips those itself. Every limit is a
+`[commit]` key in `claude-kit.toml`.
+
 ### claim-gate
 
 The one gap a survey of existing tooling could not fill: nothing ties a claim to

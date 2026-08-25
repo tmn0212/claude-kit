@@ -97,6 +97,24 @@ DEFAULTS: dict = {
             "estimated",
         ],
     },
+    "commit": {
+        # A commit message is read far more often than it is written, and it
+        # is read in a fixed-width list. 72 keeps `git log --oneline` and the
+        # GitHub subject line from truncating.
+        "subject_max": 72,
+        # The body says WHY. Past about a hundred words it stops being a
+        # commit message and starts being a document that belongs in docs/.
+        "body_words_max": 100,
+        "wrap": 72,
+        # Trailers a generated commit adds that say nothing about the change.
+        # Matched case-insensitively as substrings, one per line.
+        "banned_trailers": [
+            "Co-Authored-By: Claude",
+            "Generated with [Claude Code]",
+            "Co-authored-by: Claude Code",
+        ],
+        "enabled": True,
+    },
     "guards": {
         # A Read larger than this, of an indexed document, is refused.
         "read_bytes": 24000,

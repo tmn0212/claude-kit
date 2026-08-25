@@ -14,7 +14,9 @@ of documents, then runs each tool and asserts on its success signal.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import io
 import json
 import os
 import re
@@ -652,6 +654,12 @@ def main() -> int:
               "id: 7" not in prose_impl.strip_md("---\nid: 7\n---\n\nBody.\n"))
         check("fenced code is stripped",
               "secret" not in prose_impl.strip_md("Text.\n\n```\nsecret\n```\n"))
+        # A fence replaced by a bare space joined the paragraph before it to
+        # the one after, and the paragraph introducing a command usually ends
+        # in a colon, which is not a terminator.
+        fenced = prose_impl.strip_md("Run this:\n\n```\nx\n```\n\nIt then works.\n")
+        longest = max((len(s.split()) for s in prose_impl.sentences(fenced)), default=0)
+        check("a code block ends a sentence", longest <= 3, repr(fenced))
         # Six terminator-free bullets used to measure as one long sentence.
         bullets = prose_impl.strip_md("- one\n- two\n- three\n")
         check("a list item ends a sentence", bullets.count(".") >= 3, repr(bullets))
@@ -678,6 +686,42 @@ def main() -> int:
             "a — b\n\n```\nc — d\n```\n\n`e — f`\n")
         check("without_code keeps prose dashes and drops code ones",
               kept.count("—") == 1, repr(kept))
+
+        # --- commit messages ---
+        # git hands the hook its own comments and, under --verbose, the entire
+        # diff. Counting either fails a message on text git will never record.
+        noisy = (
+            "a subject\n\nA body line.\n\n# Please enter the commit message.\n"
+            "# On branch main\n"
+            "# ------------------------ >8 ------------------------\n"
+            "diff --git a/x b/x\n"
+            "+" + "a very long added line that runs well past seventy-two columns\n"
+        )
+        got = prose_impl.commit_body(noisy)
+        check("commit_body drops git comments and the scissors diff",
+              got == ["a subject", "", "A body line."], repr(got))
+
+        def commit_fails(msg):
+            sink = io.StringIO()
+            with contextlib.redirect_stdout(sink):
+                return prose_impl.check_commit(msg, "test")
+
+        check("a clean message passes",
+              not commit_fails("add a checker\n\nIt says why, briefly.\n"))
+        check("a machine trailer is refused",
+              any("trailer" in f for f in commit_fails(
+                  "add a checker\n\nWhy.\n\nCo-Authored-By: Claude <x@y>\n")))
+        check("an over-long subject is refused",
+              any("subject" in f for f in commit_fails("x" * 100 + "\n")))
+        # The blank-line rule used to be checked by slicing lines[2:], which
+        # meant the one message that broke it had its first body line skipped
+        # by every later check.
+        unwrapped = commit_fails("s\nbody " + "word " * 40 + "\n")
+        check("a missing blank line does not hide the line after it",
+              any("blank" in f for f in unwrapped)
+              and any("over-wide" in f for f in unwrapped), repr(unwrapped))
+        check("an em-dash in a commit message is refused",
+              any("dash" in f for f in commit_fails("s\n\nA body — here.\n")))
     except Exception as exc:  # pragma: no cover
         check("prose stripper importable", False, str(exc))
 

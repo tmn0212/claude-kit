@@ -54,6 +54,7 @@ failing.
 | `prose score --doc <f>` | Same, without the reply-length caps, for a document |
 | `prose lint <file>` | Vale against the house rules |
 | `prose check <file>` | Score, lint and diagram check in one report. Exit 1 on a hard fail |
+| `prose commit <file>` | Check a commit message: subject, body, wrap, trailers |
 | `prose diagram <file>` | Validate a Unicode box diagram: width and stroke alignment |
 | `prose chart <file>` | `label<TAB>value` lines become an ASCII bar chart |
 | `prose base` | Re-derive the corpus baseline from this project's transcripts |

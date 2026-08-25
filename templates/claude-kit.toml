@@ -119,3 +119,31 @@ labels = [
     "read in the source", "from docs", "assumed", "unverified",
     "not verified", "not reproduced", "estimated",
 ]
+
+
+[commit]
+# `prose commit` checks a message and exits 1, so it can run as a commit-msg
+# hook. Install it in a repo with `prose commit --install-hook`; nothing is
+# enforced until you do. Set false to make the tool a no-op everywhere.
+enabled = true
+
+# The subject is read in a fixed-width list far more often than it is written.
+# 72 is what `git log --oneline` and the GitHub subject line show without
+# truncating.
+subject_max = 72
+
+# The body says WHY. Past about a hundred words it stops being a commit message
+# and starts being a document that belongs in docs/ with a link from here.
+body_words_max = 100
+
+# Columns to wrap the body at. A line with no spaces is exempt: a URL or a long
+# path cannot be wrapped, and failing it only teaches people --no-verify.
+wrap = 72
+
+# Trailers a generated commit adds that say nothing about the change. Matched
+# case-insensitively, as substrings, one line at a time.
+banned_trailers = [
+    "Co-Authored-By: Claude",
+    "Generated with [Claude Code]",
+    "Co-authored-by: Claude Code",
+]

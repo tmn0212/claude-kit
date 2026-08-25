@@ -37,3 +37,12 @@ registry = ""
 # anything: the installed copy is what fires, and it reads this file.
 enabled = true
 read_bytes = 24000
+
+[commit]
+# This repo's own history predates the rule: the older commits carry subjects
+# of 94 to 221 characters. The limits apply from here on rather than being
+# relaxed to accommodate what is already written.
+enabled = true
+subject_max = 72
+body_words_max = 100
+wrap = 72

@@ -12,9 +12,13 @@ sessions (2026-08-22), not from taste. See BASELINE.md.
     prose recent [N] [dir]     score the last N assistant messages
     prose chart  <file|->      label<TAB>value lines -> ascii bar chart
     prose diagram <file|->     validate a unicode box diagram
+    prose commit <file|->      check a commit message: subject, body, trailers
+                  --install-hook   write .git/hooks/commit-msg in this repo
     prose ab     [A] [B]       A/B two output styles on the eval questions
 
-check exits 1 if any hard limit is broken, so it can gate a hook or CI.
+check and commit exit 1 if any hard limit is broken, so either can gate a hook
+or CI. `prose commit` is the one meant to run as `commit-msg`, where a non-zero
+exit is what makes git refuse the commit.
 """
 import glob
 import json
@@ -87,7 +91,13 @@ def strip_md(t):
     # Honour Vale's own off/on comments so the two tools agree on what counts.
     t = re.sub(r"<!--\s*vale off\s*-->.*?<!--\s*vale on\s*-->", " ", t, flags=re.S | re.I)
     t = re.sub(r"\A---\n.*?\n---\n", "", t, flags=re.S)          # yaml frontmatter
-    t = re.sub(r"```.*?```", " ", t, flags=re.S)
+    # A code block ends a sentence, the same way a heading and a list item do.
+    # A bare space ran the paragraph before the fence into the one after it:
+    # two sentences of about 20 words measured as one of 41. The paragraph that
+    # introduces a command almost always ends in a colon, which is not a
+    # terminator, so this was the common case rather than an edge one. Same bug
+    # as the heading one, one construct later.
+    t = re.sub(r"```.*?```", ". ", t, flags=re.S)
     t = re.sub(r"^\s*>?\s*\|.*$", "", t, flags=re.M)             # tables, quoted or not
     t = re.sub(r"`([^`]*)`", r"\1", t)
     t = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", t)
@@ -471,6 +481,183 @@ def ab(variants, model, out_dir, limit=None, workers=0):
     print(f"\nanswers are in {out_dir}, diff them to see what changed")
 
 
+# --- commit messages -------------------------------------------------------
+# A commit message is the one piece of writing here that is read far more often
+# than it is written, and always in a fixed-width list. It gets its own limits
+# rather than the reply ones: the subject has to survive `git log --oneline`,
+# and the body stops being a commit message somewhere around a hundred words.
+
+COMMIT_DEFAULTS = {
+    "subject_max": 72,
+    "body_words_max": 100,
+    "wrap": 72,
+    "banned_trailers": [
+        "Co-Authored-By: Claude",
+        "Generated with [Claude Code]",
+        "Co-authored-by: Claude Code",
+    ],
+}
+
+# git --verbose pastes the whole diff below this line. Everything after it is
+# reference material git will strip, not part of the message.
+SCISSORS = "# ------------------------ >8"
+
+
+def _commit_config():
+    """Limits from claude-kit.toml, falling back to the defaults above.
+
+    Config is a convenience here, not a dependency: a missing or unreadable
+    claude-kit.toml must not stop a commit-msg hook from checking anything.
+    """
+    limits = dict(COMMIT_DEFAULTS)
+    try:
+        sys.path.insert(0, HERE)
+        import kit_config
+
+        section = kit_config.Config.load().section("commit")
+        for key in limits:
+            if section.get(key) is not None:
+                limits[key] = section[key]
+        limits["enabled"] = section.get("enabled", True)
+    except Exception:
+        limits["enabled"] = True
+    return limits
+
+
+def commit_body(raw):
+    """The message git will actually record: comments and the diff removed."""
+    lines = []
+    for line in raw.splitlines():
+        if line.startswith(SCISSORS):
+            break
+        # git strips comment lines itself, so counting them would fail a
+        # message on text that is never committed.
+        if line.startswith("#"):
+            continue
+        lines.append(line.rstrip())
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return lines
+
+
+def check_commit(raw, name="commit message"):
+    cfg = _commit_config()
+    fails = []
+    lines = commit_body(raw)
+
+    print(f"\n{name}")
+    if not lines:
+        print("  empty after comments are stripped")
+        return ["the message is empty"]
+
+    subject = lines[0]
+    # Everything after the subject, not lines[2:]. Slicing past the blank line
+    # meant a message that broke the blank-line rule had its first body line
+    # skipped by every later check, which is exactly the message that needs
+    # them most.
+    body = lines[1:]
+    body_words = len(" ".join(body).split())
+
+    def row(label, value, limit=None, detail=""):
+        bad = limit is not None and value > limit
+        if bad:
+            fails.append(f"{label}: {value} > {limit}{detail}")
+        lim = f"<= {limit}" if limit is not None else ""
+        print(f"  {label:<22}{value:>8}   {lim:<8} {'FAIL' if bad else 'ok'}")
+
+    row("subject chars", len(subject), cfg["subject_max"])
+    row("body words", body_words, cfg["body_words_max"])
+
+    # A blank second line is what makes the subject a subject. Without it git
+    # treats the whole thing as one paragraph and --oneline shows all of it.
+    if len(lines) > 1 and lines[1].strip():
+        fails.append("line 2 must be blank, separating subject from body")
+        print(f"  {'blank line 2':<22}{'no':>8}   {'required':<8} FAIL")
+    else:
+        print(f"  {'blank line 2':<22}{'yes' if len(lines) > 1 else 'n/a':>8}"
+              f"   {'required':<8} ok")
+
+    # A line with no spaces cannot be wrapped: a URL or a long path is not a
+    # style problem, and failing it teaches people to pass --no-verify.
+    long_lines = [
+        i for i, line in enumerate(body, 2)
+        if len(line) > cfg["wrap"] and " " in line.strip()
+    ]
+    row("over-wide lines", len(long_lines), 0,
+        f" (line {long_lines[0]})" if long_lines else "")
+
+    stamped = [
+        line for line in lines
+        if any(t.lower() in line.lower() for t in cfg["banned_trailers"])
+    ]
+    row("machine trailers", len(stamped), 0)
+    for line in stamped[:3]:
+        print(f"    {line.strip()[:70]}")
+
+    banned = set("".join(TYPOGRAPHY.values()))
+    typo = sum(without_code("\n".join(lines)).count(c) for c in banned)
+    row("em/en dashes, middots", typo, 0)
+
+    return fails
+
+
+HOOK_TEMPLATE = """#!/bin/sh
+# claude-kit commit-msg hook. Written by `prose commit --install-hook`.
+# Remove it with:  rm "$0"
+#
+# Prefers `prose` on PATH, because the plugin cache path below carries a
+# version number and moves when the plugin updates.
+if command -v prose >/dev/null 2>&1; then
+    exec prose commit "$1"
+fi
+if [ -f {impl} ]; then
+    exec {py} {impl} commit "$1"
+fi
+echo "claude-kit: prose not found, commit message NOT checked." >&2
+echo "  enable the writing plugin, or: rm .git/hooks/commit-msg" >&2
+exit 0
+"""
+
+
+def install_hook():
+    """Write .git/hooks/commit-msg for the repository we are standing in."""
+    try:
+        git_dir = subprocess.run(
+            ["git", "rev-parse", "--git-dir"],
+            capture_output=True, text=True, timeout=30, check=True,
+        ).stdout.strip()
+    except (subprocess.CalledProcessError, OSError, subprocess.TimeoutExpired):
+        print("not inside a git repository")
+        return 1
+
+    hooks = os.path.join(git_dir, "hooks")
+    os.makedirs(hooks, exist_ok=True)
+    target = os.path.join(hooks, "commit-msg")
+
+    if os.path.exists(target):
+        existing = open(target, encoding="utf-8", errors="replace").read()
+        if "claude-kit commit-msg hook" not in existing:
+            # Someone else's hook. Overwriting it silently is how a pre-commit
+            # framework disappears without anyone noticing.
+            stamp = __import__("datetime").date.today().isoformat()
+            backup = f"{target}.bak-{stamp}"
+            shutil.copyfile(target, backup)
+            print(f"  backed up the existing hook to {os.path.basename(backup)}")
+
+    body = HOOK_TEMPLATE.format(
+        impl=f'"{os.path.join(HERE, "prose_impl.py")}"',
+        py=f'"{sys.executable}"',
+    )
+    # LF, always: a CRLF shebang is unrunnable, and git hooks run under sh.
+    with open(target, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(body)
+    os.chmod(target, 0o755)
+    print(f"  installed {target}")
+    print("  it refuses an over-long or machine-stamped message at commit time")
+    print("PROSE OK")
+    return 0
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
@@ -493,6 +680,25 @@ def main():
         print("\n" + ("PROSE OK" if not f else f"PROSE FAIL ({len(f)})"))
         for x in f[:15]:
             print("  " + str(x))
+        return 1 if f else 0
+    if cmd == "commit":
+        if "--install-hook" in rest:
+            return install_hook()
+        if not rest:
+            print("prose commit needs a file, or - for stdin")
+            return 2
+        cfg = _commit_config()
+        if not cfg.get("enabled", True):
+            print("PROSE OK (commit checks disabled in claude-kit.toml)")
+            return 0
+        f = check_commit(read(rest[0]), rest[0])
+        print("\n" + ("PROSE OK" if not f else f"PROSE FAIL ({len(f)})"))
+        for x in f:
+            print("  " + str(x))
+        if f:
+            # A commit-msg hook's exit code IS the refusal, so say how to
+            # override rather than leaving --no-verify to be rediscovered.
+            print("\n  edit the message, or commit with --no-verify to bypass")
         return 1 if f else 0
     if cmd == "base":
         baseline(rest[0] if rest else default_dir())
