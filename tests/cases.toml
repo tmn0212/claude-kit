@@ -173,6 +173,18 @@ cmd = "timeout 300 watch -n 5 ls"
 why = "watch on its own line after another command"
 cmd = "echo start\nwatch -n 5 ls"
 
+[[bash_guard.allow]]
+why = "an indented terminator does not close a heredoc, so it would not have run"
+cmd = "python3 - <<'PY'\n"
+pad = "x = 1\n"
+tail = "    PY\n"
+
+[[bash_guard.deny]]
+why = "<<- allows a TAB-indented terminator, and only a tab"
+cmd = "python3 - <<-'PY'\n"
+pad = "x = 1\n"
+tail = "\tPY\n"
+
 # ---------------------------------------------------------------- claim gate
 [[claim_gate.deny]]
 why = "the plain shape: a multiplier, a comparison, no label"

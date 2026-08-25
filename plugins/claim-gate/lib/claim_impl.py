@@ -87,6 +87,16 @@ def load(cfg: Config) -> list[dict]:
         except json.JSONDecodeError:
             # A torn line from an interrupted write. Skip it rather than die:
             # one bad record must not make the whole ledger unreadable.
+            #
+            # And recover what follows it. An interrupted write leaves no
+            # trailing newline, so the NEXT record was appended onto the same
+            # line: skipping the whole line lost two records, not one.
+            tail = line.rfind('{"')
+            if tail > 0:
+                try:
+                    records.append(json.loads(line[tail:]))
+                except json.JSONDecodeError:
+                    pass
             continue
     return records
 
@@ -106,6 +116,17 @@ def latest(records: list[dict]) -> dict[str, dict]:
 
 def cmd_record(cfg: Config, args) -> int:
     root = cfg.root
+    # A measurement is a number. Recording "about twice as fast" as a value
+    # gives a ledger that cannot be compared, plotted, or checked against a
+    # threshold, while still looking like data.
+    try:
+        float(str(args.value).replace(",", ""))
+    except ValueError:
+        sys.stderr.write(
+            f"claim: --value must be a number, got {args.value!r}\n"
+            "  Put the words in --cond, which is where the conditions belong.\n"
+        )
+        return 1
     sources = {}
     missing = []
     outside = []
@@ -156,6 +177,12 @@ def cmd_record(cfg: Config, args) -> int:
     }
     path = ledger_path(cfg)
     path.parent.mkdir(parents=True, exist_ok=True)
+    # If a previous write was interrupted the file has no trailing newline, and
+    # appending would continue that broken line - losing this record as well as
+    # the torn one. Close the line first.
+    if path.exists() and path.stat().st_size and not path.read_bytes().endswith(b"\n"):
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write("\n")
     with open(path, "a", encoding="utf-8") as handle:
         handle.write(json.dumps(record) + "\n")
     print(f"recorded {args.id} = {args.value} {args.unit}  [{args.label}]")

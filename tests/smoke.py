@@ -586,6 +586,22 @@ def main() -> int:
         got = run(kb, ["search", query], fresh)
         check(f"no syntax error for {query!r}", "bad query" not in got.stderr, got.stderr)
 
+    # A `"` inside an alias made both query attempts unbalanced, so every
+    # search died blaming the query rather than the config line behind it.
+    quoted_alias = fresh / "quoted"
+    quoted_alias.mkdir(exist_ok=True)
+    (quoted_alias / "docs").mkdir(exist_ok=True)
+    (quoted_alias / "docs" / "n.md").write_text("# N\n\n## S\n\nNeeds direct memory access.\n")
+    (quoted_alias / "claude-kit.toml").write_text(
+        '[kb]\nsources = ["docs"]\n\n[kb.aliases]\ndma = \'direct "memory access\'\n'
+    )
+    subprocess.run(["git", "init", "-q"], cwd=str(quoted_alias), capture_output=True)
+    run(kb, ["build"], quoted_alias)
+    broken = run(kb, ["search", "dma"], quoted_alias)
+    check("a quote inside an alias does not break every query",
+          "bad query" not in broken.stderr and "KB OK" in broken.stdout,
+          broken.stderr or broken.stdout)
+
     # An alias written as a string was iterated character by character.
     alias = run(kb, ["search", "dma"], fresh)
     check("a string alias is one phrase, not 20 letters",
@@ -646,6 +662,26 @@ def main() -> int:
     expect_signal("claim list", run(claim, ["list"], fresh), "CLAIM OK")
     expect_signal("claim show", run(claim, ["show", "sd.aligned"], fresh), "CLAIM OK")
     expect_signal("claim verify, unchanged", run(claim, ["verify"], fresh), "CLAIM OK")
+
+    # A measurement is a number. Recording words as a value gives a ledger that
+    # cannot be compared or checked against a threshold, while looking like data.
+    worded = run(claim, ["record", "--id", "w", "--value", "about twice",
+                         "--unit", "s", "--source", "src/sd.c"], fresh)
+    check("claim record refuses a non-numeric value",
+          worded.returncode == 1 and "must be a number" in worded.stderr,
+          worded.stdout + worded.stderr)
+
+    # An interrupted write leaves no trailing newline, so the next append
+    # continued that line and BOTH records were lost, not one.
+    ledger = fresh / "claims" / "ledger.jsonl"
+    ledger.write_text(ledger.read_text().rstrip("\n") + '\n{"id": "torn", "va')
+    resumed = run(claim, ["record", "--id", "after-torn", "--value", "1",
+                          "--unit", "s", "--source", "src/sd.c"], fresh)
+    expect_signal("claim record survives a torn line", resumed, "CLAIM OK")
+    relisted = run(claim, ["list"], fresh)
+    check("both the old and new records still read back",
+          "sd.aligned" in relisted.stdout and "after-torn" in relisted.stdout,
+          relisted.stdout)
 
     # A claim with nothing behind it cannot go stale, which means it also
     # cannot be checked, so recording one is refused.

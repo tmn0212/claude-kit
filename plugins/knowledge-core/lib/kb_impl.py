@@ -85,6 +85,15 @@ CREATE INDEX ref_target ON ref(kind, target);
 """
 
 
+def _unquote(value) -> str:
+    """An alias term with FTS5's own syntax characters removed.
+
+    An alias is a search term, never an expression. Leaving a `"` in one makes
+    the generated query unbalanced and unrecoverable by the tokenised retry.
+    """
+    return str(value).replace('"', " ").strip()
+
+
 class Kb:
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -94,7 +103,16 @@ class Kb:
         self.exts = tuple(cfg.get("kb.extensions", [".md"]))
         self.skip = set(cfg.get("kb.skip_dirs", []))
         self.generic = {s.lower() for s in cfg.get("kb.generic_stems", [])}
-        self.aliases = {k.lower(): v for k, v in (cfg.get("kb.aliases", {}) or {}).items()}
+        # Quotes are stripped from alias values here rather than at query time.
+        # A `"` inside one made both query attempts unbalanced, so every search
+        # died with "unterminated string" and blamed the query rather than the
+        # config line that caused it.
+        self.aliases = {
+            k.lower(): (
+                [_unquote(x) for x in v] if isinstance(v, list) else _unquote(v)
+            )
+            for k, v in (cfg.get("kb.aliases", {}) or {}).items()
+        }
         self.decisions = str(cfg.get("adr.dir", "")).strip("/")
         evidence = cfg.get("kb.evidence_dirs", None)
         if evidence is None:

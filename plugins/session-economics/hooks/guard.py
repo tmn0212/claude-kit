@@ -343,7 +343,15 @@ def hook_bash() -> None:
 
     limit = int(setting(cfg, "guards.heredoc_lines", 25))
     found = _HEREDOC.search(command)
-    if found and re.search(rf"^\s*{re.escape(found.group(1))}\s*$", command, re.M):
+    # Column 0, the way bash requires it. `<<-` is the exception and
+    # allows leading TABS only, never spaces. An indented terminator does
+    # not close the heredoc, so counting its lines measured a command that
+    # would not have run.
+    dash = found.group(0).find("<<-") >= 0
+    lead = r"[\t]*" if dash else ""
+    if found and re.search(
+        rf"^{lead}{re.escape(found.group(1))}[ \t]*$", command, re.M
+    ):
         lines = command.count("\n") + 1
         if lines > limit:
             scratch = setting(cfg, "promote.scratch", "tools/scratch")

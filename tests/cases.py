@@ -163,7 +163,7 @@ RUNNERS = {
 # reproduced. Raise a number here when you add cases; never lower one to make a
 # run pass.
 FLOORS = {
-    "bash_guard": 34,
+    "bash_guard": 36,
     "claim_gate": 15,
     "kb_query": 7,
 }
