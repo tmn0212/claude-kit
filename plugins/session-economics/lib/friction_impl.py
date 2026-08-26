@@ -59,6 +59,15 @@ MULTIPLEXERS = {
 TRIVIAL = {
     "set", "cd", "export", "echo", "printf", "true", "false", ":", "source", ".",
     "shopt", "umask", "unset", "alias", "pwd", "read",
+    # Control flow, never a program worth bucketing on. `exit` matters most: the
+    # `cd "$REPO" || exit 1` prologue is one of the commonest ways an agent opens a
+    # command, and because `cd` is skipped here the `|| exit 1` segment used to win
+    # and return before the real command on the next line was ever looked at. On one
+    # project that made `exit` the single largest reported time sink, 1h05m over 160
+    # calls, and it was not a sink at all: it was grep, rrun, find and the rest
+    # wearing a mislabel, with `brief` reprinting it at the top of every session.
+    "exit", "return", "break", "continue",
+    "[", "[[", "test", "local", "declare", "typeset", "trap", "shift", "wait",
 }
 
 _ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=\S*$")

@@ -373,6 +373,22 @@ def main() -> int:
     # Each of these shipped broken once. The check is cheaper than the bug.
     print("\nregressions")
 
+    # `cd "$REPO" || exit 1` is one of the commonest ways an agent opens a command,
+    # and shape() used to return `exit` for it: `cd` is skipped as prologue, and then
+    # the `|| exit 1` segment won before the real command on the next line was ever
+    # reached. On one project that made `exit` the largest reported time sink, 1h05m
+    # over 160 calls, none of which was a sink: it was grep, rrun and find wearing a
+    # mislabel, reprinted at the top of every session by the brief.
+    sys.path.insert(0, str(PLUGINS / "session-economics" / "lib"))
+    from friction_impl import shape as _shape
+
+    prologue = 'cd "$REPO" || exit 1\ngrep -rn needle src/'
+    check("a `|| exit 1` prologue does not swallow the command after it",
+          _shape(prologue) == "grep", _shape(prologue))
+    all_control = "set -u; cd /tmp; exit 1"
+    check("a command that is only prologue never buckets as `exit`",
+          _shape(all_control) != "exit", _shape(all_control))
+
     # A batch FILE needs `%%I`; the `%I` command-line form is a hard syntax
     # error, and two launchers had it, so `prose` and `brief` died on Windows.
     bad_cmd = []

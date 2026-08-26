@@ -1,7 +1,7 @@
 {
   "name": "session-economics",
   "displayName": "Session economics",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Measures where sessions burn tokens and wall-clock time, and installs the guards that stop them doing it again.",
   "author": {
     "name": "Minh Nguyen"
