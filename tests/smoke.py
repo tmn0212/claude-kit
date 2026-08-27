@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -388,6 +389,24 @@ def main() -> int:
     all_control = "set -u; cd /tmp; exit 1"
     check("a command that is only prologue never buckets as `exit`",
           _shape(all_control) != "exit", _shape(all_control))
+
+    # A call whose post-hook never ran (killed, timed out, session died) used to leave an
+    # orphaned stamp and be recorded NOWHERE, so the log was blind to exactly the commands
+    # worth seeing. An old stamp must now be flushed into the log as an unfinished call.
+    pend = root / "log" / "friction" / ".pending"
+    pend.mkdir(parents=True, exist_ok=True)
+    old_ms = int(time.time() * 1000) - 7 * 3600 * 1000   # 7h, past the 6h threshold
+    (pend / "orphan_call").write_text("%d\n%s" % (old_ms, "ssh mac 'hung forever'"))
+    fresh_ms = int(time.time() * 1000)
+    (pend / "live_call").write_text("%d\n%s" % (fresh_ms, "still running"))
+    trigger = json.dumps({"tool_use_id": "sweep_1", "tool_input": {"command": "echo sweep"}})
+    run(guard, ["friction-pre"], root, stdin=trigger)
+    swept = (root / "log" / "friction" / "commands.jsonl").read_text()
+    check("an abandoned call is recorded rather than silently dropped",
+          "no completion recorded" in swept and "hung forever" in swept, swept[-300:])
+    check("the sweep leaves a still-running call alone",
+          (pend / "live_call").is_file() and not (pend / "orphan_call").is_file(),
+          str(sorted(p.name for p in pend.iterdir())))
 
     # A batch FILE needs `%%I`; the `%I` command-line form is a hard syntax
     # error, and two launchers had it, so `prose` and `brief` died on Windows.

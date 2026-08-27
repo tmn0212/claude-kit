@@ -503,8 +503,68 @@ def friction_dir(cfg) -> Path | None:
     return directory
 
 
+ORPHAN_HOURS = 6
+
+
+def sweep_orphans(directory: Path) -> None:
+    """Record the calls that started and never finished.
+
+    A pre-hook stamp is consumed by the matching post-hook. When a command is
+    killed, times out, or the session dies under it, that post-hook never runs
+    and the stamp is simply orphaned, so THE CALL IS NEVER RECORDED AT ALL.
+
+    That is the wrong way round: a command that hung is the most interesting
+    thing this log could tell anyone, and it was the one thing it threw away. On
+    the project this was found on, 21 stamps had accumulated over two days while
+    a four minute `git push` hang went entirely unmeasured.
+
+    The threshold is generous on purpose. A foreground call cannot exceed the
+    harness ceiling of ten minutes, but a backgrounded one can run for hours, and
+    flushing a still-live call would both invent a failure and double count it
+    when the real post-hook arrives. Six hours is comfortably past either.
+    """
+    pending = directory / ".pending"
+    if not pending.is_dir():
+        return
+    cutoff = int(time.time() * 1000) - ORPHAN_HOURS * 3600 * 1000
+    records = []
+    for stamp in pending.iterdir():
+        try:
+            if not stamp.is_file():
+                continue
+            parts = stamp.read_text().split("\n", 1)
+            started = int(parts[0].strip())
+            if started > cutoff:
+                continue
+            records.append({
+                "ts": datetime.datetime.now(datetime.timezone.utc)
+                      .strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "session": "",
+                "ok": False,
+                # A lower bound: it ran at least this long before it was abandoned.
+                "ms": int(time.time() * 1000) - started,
+                "cmd": (parts[1] if len(parts) > 1 else "")[:400],
+                "err": "no completion recorded (killed, timed out, or interrupted)",
+            })
+            stamp.unlink()
+        except Exception:
+            # A malformed or vanished stamp must never break the call being made.
+            try:
+                stamp.unlink()
+            except Exception:
+                pass
+    if not records:
+        return
+    try:
+        with open(directory / "commands.jsonl", "a", encoding="utf-8") as handle:
+            for record in records:
+                handle.write(json.dumps(record) + "\n")
+    except Exception:
+        pass
+
+
 def hook_friction_pre() -> None:
-    """Stamp a start time, keyed by the tool call id."""
+    """Stamp a start time and the command, keyed by the tool call id."""
     data = payload()
     cfg = config()
     directory = friction_dir(cfg)
@@ -516,7 +576,13 @@ def hook_friction_pre() -> None:
     try:
         pending = directory / ".pending"
         pending.mkdir(parents=True, exist_ok=True)
-        (pending / call_id).write_text(str(int(time.time() * 1000)))
+        # The command goes in the stamp so that a call which never completes can
+        # still be reported as something more useful than an anonymous orphan.
+        command = str((data.get("tool_input") or {}).get("command") or "")[:400]
+        (pending / call_id).write_text(
+            "%d\n%s" % (int(time.time() * 1000), command)
+        )
+        sweep_orphans(directory)
     except Exception:
         pass
 
@@ -537,7 +603,9 @@ def hook_friction_post(outcome: str) -> None:
     if call_id:
         stamp = directory / ".pending" / call_id
         try:
-            started = int(stamp.read_text().strip())
+            # First line is the start time; the command follows it, so that an
+            # orphaned stamp can still be reported. See sweep_orphans.
+            started = int(stamp.read_text().split("\n", 1)[0].strip())
             stamp.unlink()
             delta = int(time.time() * 1000) - started
             # A clock jump would otherwise record a nonsense duration.
