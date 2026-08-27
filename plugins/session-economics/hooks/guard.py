@@ -379,6 +379,90 @@ def remote_burst(cfg, data, command) -> bool:
     return False
 
 
+SLOW_CACHE_AGE = 3600      # rebuild the shape/duration table at most hourly
+SLOW_MIN_RUNS = 3          # never judge a command on one unlucky sample
+
+
+def slow_shapes(cfg):
+    """Median duration per command shape, from this project's own friction log.
+
+    The log already records what every Bash call cost, so whether a command is
+    slow is a question with a MEASURED answer rather than a guess from reading
+    it. Reparsing the whole log on every call would be its own cost, so the
+    table is cached and rebuilt at most hourly, and it only keeps shapes that
+    are actually slow, which makes it small.
+
+    MEDIAN, not mean: one 400 s outlier should not make an ordinarily fast
+    command look slow, and a handful of samples is all there ever is.
+    """
+    log = cfg.root / "log" / "friction" / "commands.jsonl"
+    if not log.is_file():
+        return {}
+    cache = cfg.root / "log" / "friction" / "slow-shapes.json"
+    try:
+        if cache.is_file() and (time.time() - cache.stat().st_mtime) < SLOW_CACHE_AGE:
+            return json.loads(cache.read_text())
+    except Exception:
+        pass
+    try:
+        from friction_impl import shape
+    except Exception:
+        return {}
+    buckets: dict = {}
+    try:
+        for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            ms = rec.get("ms")
+            cmd = rec.get("cmd")
+            if not isinstance(ms, int) or not cmd:
+                continue
+            buckets.setdefault(shape(cmd), []).append(ms)
+    except Exception:
+        return {}
+    table = {}
+    for name, runs in buckets.items():
+        if len(runs) < SLOW_MIN_RUNS:
+            continue
+        runs.sort()
+        median = runs[len(runs) // 2]
+        if median >= 20000:   # keep anything near the threshold, not just past it
+            table[name] = median
+    try:
+        cache.write_text(json.dumps(table))
+    except Exception:
+        pass
+    return table
+
+
+def slow_and_foreground(cfg, data, command):
+    """(shape, median_seconds) when this command is known slow and is NOT backgrounded."""
+    if cfg is None:
+        return None
+    if (data.get("tool_input") or {}).get("run_in_background"):
+        return None
+    threshold = int(setting(cfg, "guards.background_seconds", 30)) * 1000
+    if threshold <= 0:
+        return None
+    try:
+        table = slow_shapes(cfg)
+        if not table:
+            return None
+        from friction_impl import shape
+        name = shape(command)
+        median = table.get(name)
+        if median is None or median < threshold:
+            return None
+        return name, median / 1000.0
+    except Exception:
+        return None
+
+
 def hook_bash() -> None:
     """Refuse the two Bash shapes that cost the most measured time.
 
@@ -469,7 +553,28 @@ def hook_bash() -> None:
 
     # Last, and only if nothing above refused: emit() keeps the first reply, so a
     # denial that already fired is not overwritten by a tip.
-    if remote_burst(cfg, data, command):
+    #
+    # This one first, because it is the more specific signal: "this exact command has
+    # taken 44 s the last five times" beats "you are making a lot of remote calls".
+    known_slow = slow_and_foreground(cfg, data, command)
+    if known_slow:
+        name, seconds = known_slow
+        advise(
+            "PreToolUse",
+            f"slow command: {name} has been taking about {seconds:.0f}s",
+            f"`{name}` has a median of about {seconds:.0f}s in this project's own\n"
+            "friction log, and this call is in the foreground, so the session blocks\n"
+            "for all of it and cannot do anything else meanwhile.\n\n"
+            "Prefer run_in_background: true. The harness notifies you when it exits,\n"
+            "so there is nothing to wait for and nothing to poll: end the turn, and\n"
+            "read its output file whenever the notification arrives. Work that does\n"
+            "not depend on the result can carry on in the meantime.\n\n"
+            "Keep it in the foreground when you genuinely cannot continue without the\n"
+            "answer, or when the command needs to stay attached to this terminal.\n"
+            "This is measured from past runs, not a rule, and the estimate can be\n"
+            "wrong for an unusual invocation.",
+        )
+    elif remote_burst(cfg, data, command):
         advise(
             "PreToolUse",
             "batching advisory: several remote calls in a row",

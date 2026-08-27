@@ -51,6 +51,13 @@ MULTIPLEXERS = {
     "git", "npm", "npx", "pnpm", "yarn", "cargo", "docker", "apt", "apt-get",
     "pip", "pip3", "python", "python3", "go", "systemctl", "gh", "cmake",
     "make", "claude",
+    # Interpreters and launchers. Without these, every `py x.py`, every `bash y.sh`
+    # and every `xcrun devicectl ...` collapses into a single bucket named after the
+    # interpreter, which is useless for both the report and anything reading a
+    # duration off it: `py` was measuring 32 s here because one slow script was
+    # averaged in with every quick one. `py` in particular is the Windows launcher,
+    # and is what this kit's own python option is usually set to.
+    "py", "node", "bash", "sh", "zsh", "perl", "ruby", "gradlew", "xcrun", "adb",
 } | set(_CFG.get("economics.multiplexers", []))
 
 # Shell prologue and pure-output builtins. An agent's Bash call routinely opens with

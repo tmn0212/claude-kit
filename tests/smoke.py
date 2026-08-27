@@ -397,6 +397,13 @@ def main() -> int:
     check("and `npm test` is still npm test",
           _shape("npm test") == "npm test", _shape("npm test"))
 
+    # An interpreter that keeps no subcommand buckets every script it ever ran together,
+    # which makes any duration read off that bucket meaningless.
+    for cmd, want in [("py tests/smoke.py", "py tests/smoke.py"),
+                      ("bash tools/verify.sh --quick", "bash tools/verify.sh"),
+                      ("xcrun devicectl list devices", "xcrun devicectl")]:
+        check(f"`{cmd}` keeps what it ran", _shape(cmd) == want, _shape(cmd))
+
     # A call whose post-hook never ran (killed, timed out, session died) used to leave an
     # orphaned stamp and be recorded NOWHERE, so the log was blind to exactly the commands
     # worth seeing. An old stamp must now be flushed into the log as an unfinished call.
@@ -417,9 +424,35 @@ def main() -> int:
 
     # Back-to-back remote calls each pay a fresh connection toll for no reason. The advisory
     # must fire on the 4th consecutive one, exactly once, and must NOT refuse anything.
-    def bash_call(cmd, sess="burst"):
+    def bash_call(cmd, sess="burst", **extra):
+        tool_input = {"command": cmd}
+        tool_input.update(extra)
         return run(guard, ["bash"], root,
-                   stdin=json.dumps({"session_id": sess, "tool_input": {"command": cmd}}))
+                   stdin=json.dumps({"session_id": sess, "tool_input": tool_input}))
+
+    # A command the log says is slow should be pushed to the background, and the answer must come
+    # from MEASURED history rather than from reading the command. Seed a history and check.
+    fl = root / "log" / "friction"
+    fl.mkdir(parents=True, exist_ok=True)
+    slow = "\n".join(json.dumps({"ts": "t", "session": "s", "ok": True, "ms": 44000,
+                                 "cmd": "./gradlew assembleRelease", "err": ""}) for _ in range(5))
+    fast = "\n".join(json.dumps({"ts": "t", "session": "s", "ok": True, "ms": 300,
+                                 "cmd": "git status --porcelain", "err": ""}) for _ in range(5))
+    (fl / "commands.jsonl").write_text(slow + "\n" + fast + "\n")
+    (fl / "slow-shapes.json").unlink(missing_ok=True)
+    hit = bash_call("./gradlew assembleRelease", sess="slow1").stdout
+    check("a command the log measures at 44s is pushed to the background",
+          "slow command" in hit and "44s" in hit, hit[:200])
+    check("and it advises rather than refusing",
+          "\"deny\"" not in hit, hit[:160])
+    bg = bash_call("./gradlew assembleRelease", sess="slow2", run_in_background=True).stdout
+    check("a call already backgrounded is left alone",
+          "slow command" not in bg, bg[:160])
+    quick = bash_call("git status --porcelain", sess="slow3").stdout
+    check("a fast command is not touched",
+          "slow command" not in quick, quick[:160])
+    (fl / "commands.jsonl").unlink(missing_ok=True)
+    (fl / "slow-shapes.json").unlink(missing_ok=True)
 
     outs = [bash_call("ssh mac 'uptime'").stdout for _ in range(4)]
     check("three remote calls in a row say nothing",
