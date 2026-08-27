@@ -418,6 +418,12 @@ def main() -> int:
     swept = (root / "log" / "friction" / "commands.jsonl").read_text()
     check("an abandoned call is recorded rather than silently dropped",
           "no completion recorded" in swept and "hung forever" in swept, swept[-300:])
+    # Its duration must be null, not the stamp's age. Recording the age turned a handful of
+    # two-day-old orphans into 689 hours and made them the biggest entry in the whole report.
+    orphan = [json.loads(x) for x in swept.splitlines()
+              if x.strip() and "no completion recorded" in x][0]
+    check("an abandoned call reports no duration at all",
+          orphan["ms"] is None, repr(orphan.get("ms")))
     check("the sweep leaves a still-running call alone",
           (pend / "live_call").is_file() and not (pend / "orphan_call").is_file(),
           str(sorted(p.name for p in pend.iterdir())))

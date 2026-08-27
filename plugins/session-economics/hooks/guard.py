@@ -765,8 +765,15 @@ def sweep_orphans(directory: Path) -> None:
                       .strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "session": "",
                 "ok": False,
-                # A lower bound: it ran at least this long before it was abandoned.
-                "ms": int(time.time() * 1000) - started,
+                # UNKNOWN, and it has to stay unknown. The obvious thing is to record the age
+                # of the stamp, and that number is not a duration: it is how long the stamp SAT
+                # THERE, which for one abandoned two days ago is two days. Written that way, a
+                # handful of orphans reported 689 hours between them and became the largest entry
+                # in the report, burying every real one. `aggregate` skips a non-int ms, so a null
+                # here still counts as a call and as a failure while contributing no time at all,
+                # which is exactly the truth: it started, it never finished, nobody knows for how
+                # long it ran.
+                "ms": None,
                 "cmd": (parts[1] if len(parts) > 1 else "")[:400],
                 "err": "no completion recorded (killed, timed out, or interrupted)",
             })
