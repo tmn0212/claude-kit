@@ -390,6 +390,13 @@ def main() -> int:
     check("a command that is only prologue never buckets as `exit`",
           _shape(all_control) != "exit", _shape(all_control))
 
+    # `test` is a builtin AND a very common name for a repo's own runner. Treating it as
+    # prologue would swallow the command after it, which is the bug above wearing a new name.
+    check("a repo's own ./test is real work, not prologue",
+          _shape("./test && ./deploy.sh") == "./test", _shape("./test && ./deploy.sh"))
+    check("and `npm test` is still npm test",
+          _shape("npm test") == "npm test", _shape("npm test"))
+
     # A call whose post-hook never ran (killed, timed out, session died) used to leave an
     # orphaned stamp and be recorded NOWHERE, so the log was blind to exactly the commands
     # worth seeing. An old stamp must now be flushed into the log as an unfinished call.
@@ -407,6 +414,28 @@ def main() -> int:
     check("the sweep leaves a still-running call alone",
           (pend / "live_call").is_file() and not (pend / "orphan_call").is_file(),
           str(sorted(p.name for p in pend.iterdir())))
+
+    # Back-to-back remote calls each pay a fresh connection toll for no reason. The advisory
+    # must fire on the 4th consecutive one, exactly once, and must NOT refuse anything.
+    def bash_call(cmd, sess="burst"):
+        return run(guard, ["bash"], root,
+                   stdin=json.dumps({"session_id": sess, "tool_input": {"command": cmd}}))
+
+    outs = [bash_call("ssh mac 'uptime'").stdout for _ in range(4)]
+    check("three remote calls in a row say nothing",
+          all(o.strip() == "" for o in outs[:3]), repr(outs[:3]))
+    check("the fourth advises, and does not deny",
+          "batching advisory" in outs[3] and "\"deny\"" not in outs[3], outs[3][:200])
+    check("the advisory does not repeat immediately",
+          bash_call("ssh mac 'uptime'").stdout.strip() == "",
+          "fired twice in a row")
+    # A local command in between means it was never a batchable run.
+    bash_call("ls", sess="burst2")
+    mixed = [bash_call("ssh mac 'x'", sess="burst2").stdout for _ in range(3)]
+    bash_call("ls", sess="burst2")
+    after_local = bash_call("ssh mac 'x'", sess="burst2").stdout
+    check("a local command between remote calls resets the run",
+          "batching advisory" not in after_local, after_local[:160])
 
     # A batch FILE needs `%%I`; the `%I` command-line form is a hard syntax
     # error, and two launchers had it, so `prose` and `brief` died on Windows.

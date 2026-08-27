@@ -83,9 +83,24 @@ def setting(cfg, dotted, default):
         return default
 
 
+_EMITTED = False
+
+
 def emit(obj) -> None:
+    """Write the hook's one reply.
+
+    FIRST WRITER WINS, and that is load-bearing rather than tidy: the harness
+    reads a single JSON object from stdout, so a second one would corrupt the
+    reply and the whole hook would be discarded. A refusal is always decided
+    before an advisory is offered, so keeping the first is also the right
+    precedence: being told no outranks being told a tip.
+    """
+    global _EMITTED
+    if _EMITTED:
+        return
     try:
         sys.stdout.write(json.dumps(obj))
+        _EMITTED = True
     except Exception:
         pass
 
@@ -98,6 +113,26 @@ def deny(event: str, reason: str) -> None:
                 "permissionDecision": "deny",
                 "permissionDecisionReason": reason,
             }
+        }
+    )
+
+
+def advise(event: str, summary: str, context: str) -> None:
+    """Say something without refusing anything.
+
+    Some costs are real but are not mistakes, so a denial would be wrong: the
+    call is legitimate, it is the SHAPE OF THE SEQUENCE around it that is
+    expensive. Those get a note instead, and each one is written to fire once
+    per run of the behaviour rather than on every call, because an advisory
+    that repeats is one that gets tuned out.
+    """
+    emit(
+        {
+            "systemMessage": summary,
+            "hookSpecificOutput": {
+                "hookEventName": event,
+                "additionalContext": context,
+            },
         }
     )
 
@@ -290,6 +325,60 @@ def shell_fragments(command: str):
             yield tokens[index + 1]
 
 
+_REMOTE_DEFAULT = [
+    r"(?:^|[|;&(\s])ssh\s+[^-\s]",      # `ssh host ...`, not `ssh-keygen`
+    r"(?:^|[|;&(\s])rrun\b",
+    r"(?:^|[|;&(\s])scp\s",
+    r"\bdocker\s+exec\b",
+    r"\bkubectl\s+exec\b",
+]
+
+
+def remote_burst(cfg, data, command) -> bool:
+    """True once, when a run of back-to-back remote calls gets long enough to matter.
+
+    Every remote call pays a fixed toll before it does any work: a process
+    launch, a connection, an authentication. Paying it once for fifteen
+    questions is one toll; paying it fifteen times is fifteen, and the work in
+    between is usually nothing at all. Measured on one project: five hours
+    across 63 sessions sat in runs of three or more consecutive remote calls,
+    the longest being fifteen in a row.
+
+    Deliberately an advisory and not a refusal. Any single one of those calls is
+    a perfectly reasonable thing to run; only the sequence is wasteful, and a
+    hook cannot know whether the next command depends on this one's output.
+
+    Fires ONCE per run: the counter is reset by the advisory itself, so a burst
+    of thirty produces one note rather than twenty-six.
+    """
+    patterns = cfg.get("economics.remote_patterns", _REMOTE_DEFAULT) if cfg else _REMOTE_DEFAULT
+    threshold = int(cfg.get("economics.remote_burst", 4) if cfg else 4)
+    if threshold <= 0:
+        return False
+    session = re.sub(r"[^A-Za-z0-9_-]", "", str(data.get("session_id") or ""))[:36]
+    if not session or cfg is None:
+        return False
+    try:
+        is_remote = any(re.search(p, command) for p in patterns)
+        state = cfg.root / "log" / "ctxguard"
+        state.mkdir(parents=True, exist_ok=True)
+        marker = state / ("remote-" + session)
+        if not is_remote:
+            # A local command between two remote ones means the sequence was not
+            # a burst that could have been one payload.
+            if marker.is_file():
+                marker.unlink()
+            return False
+        run = (int(marker.read_text().strip()) if marker.is_file() else 0) + 1
+        if run >= threshold:
+            marker.write_text("0")
+            return True
+        marker.write_text(str(run))
+    except Exception:
+        return False
+    return False
+
+
 def hook_bash() -> None:
     """Refuse the two Bash shapes that cost the most measured time.
 
@@ -343,15 +432,25 @@ def hook_bash() -> None:
 
     limit = int(setting(cfg, "guards.heredoc_lines", 25))
     found = _HEREDOC.search(command)
-    # Column 0, the way bash requires it. `<<-` is the exception and
-    # allows leading TABS only, never spaces. An indented terminator does
-    # not close the heredoc, so counting its lines measured a command that
-    # would not have run.
-    dash = found.group(0).find("<<-") >= 0
-    lead = r"[\t]*" if dash else ""
-    if found and re.search(
-        rf"^{lead}{re.escape(found.group(1))}[ \t]*$", command, re.M
-    ):
+    # `if found` HAS TO COME FIRST. It used to sit on the line below, after the
+    # match had already been dereferenced, so every command WITHOUT a heredoc
+    # raised AttributeError here. main() swallows that to keep the promise at
+    # rule 1, so the failure was invisible: nothing was being denied for those
+    # commands anyway. What it silently did was abort hook_bash at this line, so
+    # any check added after it could never run, whatever it was.
+    if found:
+        # Column 0, the way bash requires it. `<<-` is the exception and
+        # allows leading TABS only, never spaces. An indented terminator does
+        # not close the heredoc, so counting its lines measured a command that
+        # would not have run.
+        dash = found.group(0).find("<<-") >= 0
+        lead = r"[\t]*" if dash else ""
+        terminated = re.search(
+            rf"^{lead}{re.escape(found.group(1))}[ \t]*$", command, re.M
+        )
+    else:
+        terminated = None
+    if terminated:
         lines = command.count("\n") + 1
         if lines > limit:
             scratch = setting(cfg, "promote.scratch", "tools/scratch")
@@ -367,6 +466,26 @@ def hook_bash() -> None:
                 f"If it earns a permanent place: promote {scratch}/<name>.py\n\n"
                 f"Short heredocs are still fine, this only fires past {limit} lines.",
             )
+
+    # Last, and only if nothing above refused: emit() keeps the first reply, so a
+    # denial that already fired is not overwritten by a tip.
+    if remote_burst(cfg, data, command):
+        advise(
+            "PreToolUse",
+            "batching advisory: several remote calls in a row",
+            "That is several back-to-back remote calls with nothing local between them.\n\n"
+            "Each one pays a fixed toll before it does any work: a process launch, a\n"
+            "connection, an authentication. Paying it once for ten questions is one\n"
+            "toll; paying it ten times is ten, and connection reuse often cannot help,\n"
+            "on Windows the ssh client cannot multiplex at all.\n\n"
+            "If the next few commands do not depend on this one's OUTPUT, send them as\n"
+            "one payload and read one answer:\n"
+            "  ssh HOST 'bash -s' < script.sh      # nothing re-parses the script\n"
+            "  rrun -s bash HOST -c '...'          # same, base64, safe for any quoting\n\n"
+            "Ignore this when each step genuinely needs the previous result. This is a\n"
+            "cost signal, not an instruction, and it will not fire again until the next\n"
+            "run of back-to-back remote calls.",
+        )
 
 
 # --- 3. depth guard -------------------------------------------------------

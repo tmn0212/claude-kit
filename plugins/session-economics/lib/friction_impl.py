@@ -67,7 +67,13 @@ TRIVIAL = {
     # calls, and it was not a sink at all: it was grep, rrun, find and the rest
     # wearing a mislabel, with `brief` reprinting it at the top of every session.
     "exit", "return", "break", "continue",
-    "[", "[[", "test", "local", "declare", "typeset", "trap", "shift", "wait",
+    "[", "[[", "local", "declare", "typeset", "trap", "shift", "wait",
+    # NOT `test`. It is a shell builtin, but it is also a very ordinary name for a
+    # repo's own entry point, and `_program` reduces `./test` and `bin/test` to the
+    # basename `test`. Listing it here would make `./test && ./deploy.sh` bucket as
+    # `./deploy.sh`, which is this exact bug wearing a different name. `npm test`
+    # and `go test` are unaffected either way: there `test` is a subcommand reached
+    # through MULTIPLEXERS, never the leading token.
 }
 
 _ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=\S*$")
