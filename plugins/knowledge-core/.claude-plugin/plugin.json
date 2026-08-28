@@ -1,7 +1,7 @@
 {
   "name": "knowledge-core",
   "displayName": "Knowledge core",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "An indexed, queryable knowledge base over a project's own documents, plus decision records whose `proposed` state is the open-questions register.",
   "author": {
     "name": "Minh Nguyen"
