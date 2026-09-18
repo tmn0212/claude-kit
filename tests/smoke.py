@@ -889,6 +889,72 @@ def main() -> int:
     check("drift exits non-zero, so CI can gate on it", drift.returncode == 1, str(drift.returncode))
     check("drift names the re-measure command", "./bench.sh 2.1b" in drift.stdout, drift.stdout)
 
+    # A line ending is not content, and hashing raw bytes made it part of the
+    # evidence. On a CRLF checkout every claim eventually read as drifted: a file
+    # written mid-session by awk, sed or a heredoc is LF until git next touches it,
+    # so `claim record` bound a hash of bytes that never persisted. Measured on one
+    # repo before the fix: 10 of 10 claims drifted, and one claim at one commit read
+    # OK in one worktree and DRIFT in another with identical git blobs.
+    import importlib.util          # at point of use, as elsewhere in this file
+    spec = importlib.util.spec_from_file_location(
+        "claim_impl_under_test", PLUGINS / "claim-gate" / "lib" / "claim_impl.py")
+    ci = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ci)
+
+    eol = fresh / "src" / "eol.c"
+    eol.write_bytes(b"int f(void) {\n  return 0;\n}\n")
+    lf_digest = ci.digest(eol)
+    eol.write_bytes(b"int f(void) {\r\n  return 0;\r\n}\r\n")
+    check("the digest ignores CRLF against LF", ci.digest(eol) == lf_digest)
+    eol.write_bytes(b"int f(void) {\n  return 1;\n}\n")
+    check("and still notices a changed return value", ci.digest(eol) != lf_digest)
+
+    # Normalising a binary would collide two files that differ only by a CRLF
+    # pair, so a NUL byte in the first 8 KiB switches normalisation off.
+    b1 = fresh / "src" / "one.bin"
+    b2 = fresh / "src" / "two.bin"
+    b1.write_bytes(b"\x00\x01\r\n\x02")
+    b2.write_bytes(b"\x00\x01\n\x02")
+    check("two binaries differing by a CRLF stay distinct", ci.digest(b1) != ci.digest(b2))
+    check("a lone CR is left alone, it can be content", ci._lf(b"x\ry") == b"x\ry")
+
+    # End to end: record, then let a checkout re-render the file, which is the
+    # exact sequence that produced the false drift.
+    flip = fresh / "src" / "flip.c"
+    flip.write_bytes(b"int g(void) { return 0; }\n")
+    expect_signal("claim record, a source with LF endings",
+                  run(claim, ["record", "--id", "eol.flip", "--value", "3", "--unit", "ms",
+                              "--cmd", "./bench.sh", "--source", "src/flip.c"], fresh), "CLAIM OK")
+    ledger_text = (fresh / "claims" / "ledger.jsonl").read_text()
+    check("a new record declares its digest semantics",
+          '"digest": "sha256-16/lf"' in ledger_text, ledger_text[-200:])
+    flip.write_bytes(b"int g(void) { return 0; }\r\n")
+    expect_signal("verify survives a CRLF checkout",
+                  run(claim, ["verify", "--id", "eol.flip"], fresh), "CLAIM OK")
+    flip.write_bytes(b"int g(void) { return 1; }\r\n")
+    edited = run(claim, ["verify", "--id", "eol.flip"], fresh)
+    check("verify still catches a real edit through a CRLF checkout",
+          "CLAIM DRIFT" in edited.stdout and edited.returncode == 1, edited.stdout)
+
+    # The ledger is append-only, so records written before newline normalisation
+    # cannot be rewritten. They are matched against both representations instead,
+    # and the tool says when that happened rather than passing them silently.
+    legacy_src = fresh / "src" / "legacy.c"
+    legacy_src.write_bytes(b"int h(void) { return 0; }\r\n")
+    legacy = {"id": "eol.legacy", "value": "9", "unit": "ms", "cond": "", "cmd": "./bench.sh",
+              "sources": {"src/legacy.c": ci._sha(b"int h(void) { return 0; }\n")},
+              "commit": "", "recorded": "2026-01-01T00:00:00Z", "label": "measured"}
+    (fresh / "claims" / "ledger.jsonl").write_text(json.dumps(legacy) + "\n")
+    old = run(claim, ["verify"], fresh)
+    expect_signal("a pre-fix record verifies on a CRLF checkout", old, "CLAIM OK")
+    check("and the normalisation is named, not hidden",
+          "matched only after newline normalisation" in old.stdout, old.stdout)
+    check("show marks that source ok (eol)",
+          "ok (eol)" in run(claim, ["show", "eol.legacy"], fresh).stdout)
+    legacy_src.write_bytes(b"int h(void) { return 1; }\r\n")
+    check("a pre-fix record still catches a real edit",
+          run(claim, ["verify"], fresh).returncode == 1)
+
     def stop_hook(text, session, active=False):
         transcript = fresh / "t.jsonl"
         transcript.write_text(json.dumps(

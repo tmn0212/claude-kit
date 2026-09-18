@@ -47,17 +47,77 @@ def ledger_path(cfg: Config) -> Path:
     return cfg.root / str(cfg.get("claims.ledger", str(LEDGER)))
 
 
+_DIGEST_ALGO = "sha256-16/lf"
+
+
+def _is_binary(data: bytes) -> bool:
+    """git's own heuristic: a NUL byte in the first 8 KiB means leave the bytes alone."""
+    return b"\x00" in data[:8000]
+
+
+def _lf(data: bytes) -> bytes:
+    r"""CRLF to LF, for text only.
+
+    Exactly git's `text` conversion and no more. A LONE CR is deliberately left
+    alone: in a text file it is as likely to be content (`printf '\r'`) as a line
+    ending, and folding it in would mask a real change to that content.
+    """
+    return data if _is_binary(data) else data.replace(b"\r\n", b"\n")
+
+
+def _sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()[:16]
+
+
 def digest(path: Path) -> str | None:
     """A content hash, or None when the file is gone.
 
     Content rather than mtime: a checkout, a rebase or a `touch` all move mtime
     without changing what the measurement depended on, and a staleness signal
     that cries wolf is one people turn off.
+
+    NEWLINE NORMALISED, which is load bearing rather than tidiness. Hashing raw
+    bytes made a line ending part of the evidence, so on a CRLF checkout every
+    claim eventually read as drifted: a file written mid-session by awk, sed or a
+    heredoc is LF until git next touches it, and `claim record` then bound a hash
+    of bytes that never persisted. Measured on one repo: 10 of 10 claims drifted,
+    and the same claim at the same commit read OK in one worktree and DRIFT in
+    another with identical git blobs. A number does not depend on how its source
+    file terminates lines, so neither may its hash.
     """
     try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+        data = path.read_bytes()
     except OSError:
         return None
+    return _sha(_lf(data))
+
+
+def source_state(path: Path, want: str, algo: str = "") -> str:
+    """`ok`, `eol`, `CHANGED` or `gone` for one recorded source.
+
+    `algo` is the record's own digest marker, empty for any record written before
+    this tool normalised newlines. Those hashed raw bytes, and the ledger is
+    append-only so they cannot be rewritten: they are matched against both
+    representations here instead. `eol` means the content is unchanged and only
+    the line endings differ, which is not drift.
+
+    Nothing real is masked. Each equality below implies the recorded bytes were a
+    line-ending variant of the bytes on disk now, so the content behind the number
+    is the same content.
+    """
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return "gone"
+    if algo:
+        return "ok" if _sha(_lf(data)) == want else "CHANGED"
+    if _sha(data) == want:
+        return "ok"
+    if not _is_binary(data):
+        lf = data.replace(b"\r\n", b"\n")
+        if _sha(lf) == want or _sha(lf.replace(b"\n", b"\r\n")) == want:
+            return "eol"
+    return "CHANGED"
 
 
 def git_head(root: Path) -> str:
@@ -171,6 +231,7 @@ def cmd_record(cfg: Config, args) -> int:
         "cond": args.cond or "",
         "cmd": args.cmd or "",
         "sources": sources,
+        "digest": _DIGEST_ALGO,
         "commit": git_head(root),
         "recorded": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "label": args.label,
@@ -221,10 +282,10 @@ def cmd_show(cfg: Config, args) -> int:
     print(f"  command    {record.get('cmd') or '(none recorded)'}")
     print(f"  recorded   {record.get('recorded', '')} at {record.get('commit') or 'no commit'}")
     print("  sources")
+    algo = record.get("digest", "")
     for name, want in (record.get("sources") or {}).items():
-        got = digest(cfg.root / name)
-        state = "gone" if got is None else ("ok" if got == want else "CHANGED")
-        print(f"    {state:<8} {name}")
+        state = source_state(cfg.root / name, want, algo)
+        print(f"    {'ok (eol)' if state == 'eol' else state:<8} {name}")
     history = [r for r in load(cfg) if r.get("id") == args.id]
     if len(history) > 1:
         print(f"  {len(history)} recordings, oldest {history[0].get('recorded', '')[:10]}")
@@ -245,15 +306,19 @@ def cmd_verify(cfg: Config, args) -> int:
         return 0
 
     drifted = []
+    eol = []
     for ident in sorted(records):
         record = records[ident]
         problems = []
+        algo = record.get("digest", "")
         for name, want in (record.get("sources") or {}).items():
-            got = digest(cfg.root / name)
-            if got is None:
+            state = source_state(cfg.root / name, want, algo)
+            if state == "gone":
                 problems.append(f"gone: {name}")
-            elif got != want:
+            elif state == "CHANGED":
                 problems.append(f"changed: {name}")
+            elif state == "eol":
+                eol.append(f"{ident}: {name}")
         if problems:
             drifted.append((ident, record, problems))
 
@@ -267,6 +332,15 @@ def cmd_verify(cfg: Config, args) -> int:
             print(f"       re-measure: {record['cmd']}")
 
     checked = len(records)
+    if eol:
+        # Visible, because a guard nobody can see firing cannot be told apart from
+        # one that never fires. These predate newline-normalised digests.
+        print()
+        print(f"note: {len(eol)} source(s) matched only after newline normalisation:")
+        for item in eol:
+            print(f"      {item}")
+        print("      Recorded before this tool ignored line endings. Content is unchanged.")
+        print("      Re-record on the next real measurement to upgrade them.")
     if drifted:
         print(f"\n{len(drifted)} of {checked} claim(s) rest on evidence that has moved.")
         print("A number whose producing code has changed still looks like an answer.")
