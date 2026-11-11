@@ -56,7 +56,7 @@ def has_deps(python: str | Path) -> bool:
             # to learn what the file system already says.
             [str(python), "-c",
              "import importlib.util as u,sys;"
-             "sys.exit(0 if all(u.find_spec(m) for m in ('textstat','plotext')) else 1)"],
+             "sys.exit(0 if all(u.find_spec(m) for m in ('textstat','plotext','nltk','pyphen')) else 1)"],
             capture_output=True,
             timeout=30,
         )

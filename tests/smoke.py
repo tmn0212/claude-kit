@@ -215,6 +215,50 @@ def prose_culprit_checks(prose_impl, scratch: Path) -> None:
     check("a cached run gives textstat's own grade", stock and stock == built == cached,
           f"{stock!r} {built!r} {cached!r}")
 
+    # A relative PROSE_CACHE is resolved, and the second run really reads the cache (no nltk).
+    probe2 = probe.replace("print(", "print(hasattr(sys.modules.get('nltk'), 'corpus'), ", 1)
+    rel_env = dict(os.environ, PROSE_CACHE="relcache")
+    run_rel = lambda: subprocess.run([sys.executable, "-c", probe2, str(engine.parent)],
+                                     capture_output=True, text=True, env=rel_env, cwd=scratch)
+    run_rel()
+    second = run_rel()
+    check("a relative PROSE_CACHE builds and then reads the cache",
+          (scratch / "relcache" / "prose-syllables.db").exists()
+          and second.stdout.startswith("False") and second.stdout.split()[1] == stock.strip(),
+          second.stdout + second.stderr)
+
+    # A cache damaged past its header is rebuilt, not fatal on every run.
+    db = cache / "prose-syllables.db"
+    data = bytearray(db.read_bytes())
+    data[8192:] = b"\xff" * (len(data) - 8192)
+    db.write_bytes(bytes(data))
+    healed = subprocess.run([sys.executable, "-c", probe, str(engine.parent)],
+                            capture_output=True, text=True, env=env)
+    again = subprocess.run([sys.executable, "-c", probe, str(engine.parent)],
+                           capture_output=True, text=True, env=env)
+    check("a corrupt cache still gives textstat's grade", healed.stdout == stock, healed.stdout + healed.stderr)
+    check("a corrupt cache is rebuilt for the next run", again.stdout == stock, again.stdout + again.stderr)
+
+    # A vale that cannot run is a failure, never a clean pass.
+    if prose_impl._vale_binary():
+        empty = scratch / "no-vale-config"
+        empty.mkdir(exist_ok=True)
+        broken = subprocess.run([sys.executable, str(engine), "check", "--doc", str(sample)],
+                                capture_output=True, text=True,
+                                env=dict(env, PROSE_DATA=str(empty)))
+        clean = scratch / "clean.md"
+        clean.write_text("Short and plain.\n", encoding="utf-8")
+        broken_clean = subprocess.run([sys.executable, str(engine), "check", "--doc", str(clean)],
+                                      capture_output=True, text=True,
+                                      env=dict(env, PROSE_DATA=str(empty)))
+        check("a vale that fails makes the check fail",
+              "PROSE FAIL" in broken_clean.stdout and "vale failed" in broken_clean.stdout
+              and broken_clean.returncode == 1, broken_clean.stdout + broken_clean.stderr)
+
+    # A bracket that holds a clause still counts the semicolon inside it.
+    check("a semicolon inside a clause bracket still counts",
+          prose_impl.clause_count("Use it (the cache holds all words; it is sqlite) now") == 3)
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(prog="smoke.py")

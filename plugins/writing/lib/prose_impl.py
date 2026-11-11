@@ -113,19 +113,21 @@ def read(arg):
 # used, so it is kept once in a small cache file and nltk is never imported.
 # Same numbers, no nltk. Any failure falls back to the stock textstat.
 
-SYL_SCHEMA = 2
+SYL_SCHEMA = 3
 
 
 def cache_dir():
     base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
-    return os.environ.get("PROSE_CACHE") or os.path.join(base, "claude-kit")
+    return os.path.abspath(os.environ.get("PROSE_CACHE") or os.path.join(base, "claude-kit"))
 
 
 class _Syllables:
     """Stands in for nltk's cmudict: word -> [[phones]], only the count matters.
 
     The counts sit in a sqlite file and are read a word at a time: unpacking
-    all 126,000 entries into a dict cost more than the rest of the run.
+    all 126,000 entries into a dict cost more than the rest of the run. A file
+    that is damaged past its header fails here, as sqlite3.DatabaseError, and
+    score() answers by deleting the cache and starting again.
     """
 
     def __init__(self, con):
@@ -153,46 +155,125 @@ class _LazyPyphen:
 
 
 _TEXTSTAT = None
+_SYL_CON = None
+_SYL_PATH = None
+
+
+def _textstat_version():
+    try:
+        import importlib.metadata as md
+
+        return md.version("textstat")
+    except Exception:
+        return "unknown"
+
+
+def _stat_key(corpus):
+    """size and mtime of the cmudict file the counts were read from."""
+    try:
+        st = os.stat(corpus)
+        return f"{corpus}|{st.st_size}|{st.st_mtime_ns}"
+    except OSError:
+        return ""
 
 
 def _open_syllables(path):
+    """The cache connection if the file is a current cache, else None.
+
+    Current means: this schema, this textstat version, and the cmudict file it
+    was built from still has the size and mtime it had then.
+    """
     import pathlib
     import sqlite3
 
+    con = None
     try:
-        con = sqlite3.connect(pathlib.Path(path).as_uri() + "?mode=ro", uri=True)
+        con = sqlite3.connect(pathlib.Path(path).resolve().as_uri() + "?mode=ro", uri=True)
         if con.execute("PRAGMA user_version").fetchone()[0] == SYL_SCHEMA:
-            return con
-        con.close()
+            meta = dict(con.execute("SELECT k, v FROM meta").fetchall())
+            ok = meta.get("textstat") == _textstat_version()
+            if ok and meta.get("corpus"):
+                ok = _stat_key(meta["corpus"].split("|")[0]) == meta["corpus"]
+            if ok:
+                return con
     except sqlite3.Error:
         pass
+    if con is not None:
+        con.close()
     return None
 
 
-def _build_syllables(path, textstat):
-    """Write the cache from the real dictionary. Failure is fine: no cache."""
+def _build_syllables(path):
+    """Write the cache from the real dictionary. The caller ignores failure."""
     import sqlite3
 
     from textstat.backend.utils import get_cmudict
 
     d = get_cmudict("en_US")
     rows = [(w, sum(1 for p in v[0] if p[-1].isdigit())) for w, v in d.items() if v]
+    corpus = ""
+    try:
+        import nltk
+
+        ptr = nltk.data.find("corpora/cmudict")
+        f = getattr(ptr, "path", None) or getattr(getattr(ptr, "zipfile", None), "filename", None)
+        corpus = _stat_key(f) if f else ""
+    except Exception:
+        corpus = ""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = f"{path}.{os.getpid()}"
-    con = sqlite3.connect(tmp)
-    con.execute("CREATE TABLE s (w TEXT PRIMARY KEY, n INTEGER) WITHOUT ROWID")
-    con.executemany("INSERT INTO s VALUES (?, ?)", rows)
-    con.execute(f"PRAGMA user_version = {SYL_SCHEMA}")
-    con.commit()
-    con.close()
-    os.replace(tmp, path)
+    con = None
+    try:
+        con = sqlite3.connect(tmp)
+        con.execute("CREATE TABLE s (w TEXT PRIMARY KEY, n INTEGER) WITHOUT ROWID")
+        con.executemany("INSERT INTO s VALUES (?, ?)", rows)
+        con.execute("CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT)")
+        con.executemany("INSERT INTO meta VALUES (?, ?)",
+                        [("textstat", _textstat_version()), ("corpus", corpus)])
+        con.execute(f"PRAGMA user_version = {SYL_SCHEMA}")
+        con.commit()
+        con.close()
+        con = None
+        os.replace(tmp, path)
+    except BaseException:
+        if con is not None:
+            con.close()
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _drop_modules():
+    sys.modules.pop("nltk", None)
+    for k in [k for k in sys.modules if k.startswith("textstat")]:
+        del sys.modules[k]
+
+
+def textstat_reset():
+    """The cache turned out to be damaged: delete it and rebuild from stock textstat."""
+    global _TEXTSTAT, _SYL_CON
+    if _SYL_CON is not None:
+        try:
+            _SYL_CON.close()
+        except Exception:
+            pass
+        _SYL_CON = None
+    try:
+        os.remove(_SYL_PATH)
+    except (OSError, TypeError):
+        pass
+    _drop_modules()
+    _TEXTSTAT = None
+    return textstat_module()
 
 
 def textstat_module():
-    global _TEXTSTAT
+    global _TEXTSTAT, _SYL_CON, _SYL_PATH
     if _TEXTSTAT is not None:
         return _TEXTSTAT
-    path = os.path.join(cache_dir(), "prose-syllables.db")
+    path = _SYL_PATH = os.path.join(cache_dir(), "prose-syllables.db")
     con = _open_syllables(path) if os.path.exists(path) else None
     if con is not None and "nltk" not in sys.modules:
         import types
@@ -203,6 +284,7 @@ def textstat_module():
         mod = sys.modules.get("textstat.backend.counts._count_syllables")
         if mod is not None and hasattr(mod, "get_cmudict"):
             cmu = _Syllables(con)
+            _SYL_CON = con
             mod.get_cmudict = lambda lang: cmu if str(lang).startswith("en") else None
             real_pyphen = getattr(mod, "get_pyphen", None)
             if real_pyphen is not None:
@@ -210,14 +292,15 @@ def textstat_module():
             _TEXTSTAT = textstat
             return textstat
         # The layout changed under us: undo the stub and use the real thing.
-        del sys.modules["nltk"]
-        for k in [k for k in sys.modules if k.startswith("textstat")]:
-            del sys.modules[k]
+        con.close()
+        _drop_modules()
+    elif con is not None:
+        con.close()
     import textstat
 
     _TEXTSTAT = textstat
     try:
-        _build_syllables(path, textstat)
+        _build_syllables(path)
     except Exception:
         pass
     return textstat
@@ -309,8 +392,13 @@ def clause_info(b):
     for m in _MARK.finditer(b):
         before = " ".join(b[:m.start()].split()[-3:])
         if m.group(1) is not None:
-            if len(m.group(1).split()) >= CLAUSE_MIN_WORDS:
-                marks.append(("bracket", before, m.group(1).strip()))
+            inner = m.group(1)
+            if len(inner.split()) >= CLAUSE_MIN_WORDS:
+                marks.append(("bracket", before, inner.strip()))
+                # A ; or spaced dash inside the bracket is a further fact.
+                for k in re.finditer(r"\s[-—–]\s|;", inner):
+                    kind = "semicolon" if k.group(0) == ";" else "spaced dash"
+                    marks.append((kind, " ".join(inner[:k.start()].split()[-3:]), ""))
         elif m.group(0) == ";":
             marks.append(("semicolon", before, ""))
         else:
@@ -476,6 +564,19 @@ def score(raw):
     dense = [(n, b) for n, b in bs if clause_count(b) >= 3]
     naked = [(n, b) for n, b in bs if not b.rstrip().endswith((".", ":", "?", "!"))
              and len(b.split()) > 14]
+    def measure(ts):
+        if not ss:
+            return 0.0, 0.0
+        return round(ts.flesch_kincaid_grade(t), 1), round(ts.flesch_reading_ease(t), 1)
+
+    try:
+        grades = measure(textstat)
+    except Exception as e:
+        # A syllable cache damaged past its header: drop it, rebuild, go on.
+        db_error = getattr(sys.modules.get("sqlite3"), "DatabaseError", ())
+        if not db_error or not isinstance(e, db_error):
+            raise
+        grades = measure(textstat_reset())
     body = raw.lstrip("#").lstrip()
     prose_only = without_code(raw)
     banned = {k: sum(prose_only.count(c) for c in chars) for k, chars in TYPOGRAPHY.items()}
@@ -484,8 +585,8 @@ def score(raw):
         "middots": banned["middots"],
         "words": len(raw.split()),
         "sentences": len(ss),
-        "fk": round(textstat.flesch_kincaid_grade(t), 1) if ss else 0.0,
-        "ease": round(textstat.flesch_reading_ease(t), 1) if ss else 0.0,
+        "fk": grades[0],
+        "ease": grades[1],
         "median_sentence": lens[len(lens) // 2],
         "longest_sentence": lens[-1],
         "bold": raw.count("**") // 2,
@@ -593,6 +694,14 @@ def lint(path, shown=None, proc=None):
         return []
     stdout, stderr = proc.communicate()
     name = shown or path
+    # Vale exits 0 clean and 1 on findings. Anything else, or nothing on stdout
+    # with something on stderr, is vale failing (bad config, bad StylesPath),
+    # and a failed check must not read as a clean one.
+    if proc.returncode not in (0, 1) or (not stdout.strip() and stderr.strip()):
+        out = [l for l in (stderr + stdout).splitlines() if l.strip()] or [f"vale exited {proc.returncode}"]
+        for l in out[:25]:
+            print("  vale failed: " + l)
+        return [f"vale failed: {out[0]}"]
     try:
         data = json.loads(stdout or "{}")
         found = [a for alerts in data.values() for a in alerts]
