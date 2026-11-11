@@ -97,6 +97,18 @@ def setup() -> int:
     return 1
 
 
+def remember(python: str, code: int) -> None:
+    """Note the venv interpreter whose engine run succeeded, for the sh fast path in bin/prose."""
+    path = Path(python)
+    if code not in (0, 1) or path.name.lower() != "python.exe" or path.parent.name != "Scripts":
+        return
+    try:
+        note = VENVS[0].parent / "prose-fast"
+        note.write_text(str(path) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "--setup":
         return setup()
@@ -114,7 +126,9 @@ def main() -> int:
         return 2
 
     try:
-        return subprocess.run([python, str(ENGINE), *sys.argv[1:]]).returncode
+        code = subprocess.run([python, str(ENGINE), *sys.argv[1:]]).returncode
+        remember(python, code)
+        return code
     except (OSError, subprocess.SubprocessError) as exc:
         sys.stderr.write(f"prose: could not run the engine: {exc}\n")
         return 2

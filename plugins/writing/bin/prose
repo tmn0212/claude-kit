@@ -3,22 +3,28 @@
 #
 # The Python launcher (prose_launch.py) probes the venv with a second python and then runs
 # the engine as a third, each behind the Windows venv redirector, and the Git Bash shebang
-# adds the py launcher on top: measured 3.7 s per call. This shim reads the venv's home from
-# pyvenv.cfg and starts that base interpreter on the engine directly, with the venv's
-# site-packages on PYTHONPATH. Anything unusual (PROSE_PYTHON set, --setup, no Windows-layout
-# venv, no pyvenv.cfg) falls through to prose_launch.py, which behaves as before.
+# adds the py launcher on top: measured 3.7 s per call. prose_launch.py records the venv
+# interpreter whose engine run worked in <cache>/claude-kit/prose-fast. This shim reads that
+# note, takes the venv's home from pyvenv.cfg and starts that base interpreter on the engine
+# directly, with the venv's site-packages on PYTHONPATH. With no note, with PROSE_PYTHON set,
+# or for --setup it falls through to prose_launch.py (behaves as before, writes the note).
 d=${0%/*}
 case "$0" in */*) ;; *) d=. ;; esac
 if [ -z "${PROSE_PYTHON:-}" ] && [ "${1:-}" != "--setup" ]; then
-  for v in "${XDG_CACHE_HOME:-$HOME/.cache}/claude-kit/prose" "$d/../.venv"; do
-    [ -f "$v/Lib/site-packages/textstat/__init__.py" ] && [ -f "$v/pyvenv.cfg" ] || continue
+  note="${XDG_CACHE_HOME:-$HOME/.cache}/claude-kit/prose-fast"
+  py=
+  [ -f "$note" ] && read -r py < "$note"
+  case $py in *[![:print:]]) py=${py%?} ;; esac
+  v=${py%[/\\]Scripts[/\\]python.exe}
+  if [ -n "$py" ] && [ "$v" != "$py" ] && [ -f "$v/pyvenv.cfg" ]; then
     home=
     while IFS='= ' read -r k val; do
       if [ "$k" = home ]; then home=$val; break; fi
     done < "$v/pyvenv.cfg"
     case $home in *[![:print:]]) home=${home%?} ;; esac
-    [ -n "$home" ] && [ -f "$home/python.exe" ] || continue
-    PYTHONPATH="$v/Lib/site-packages${PYTHONPATH:+;$PYTHONPATH}" exec "$home/python.exe" "$d/../lib/prose_impl.py" "$@"
-  done
+    if [ -n "$home" ] && [ -f "$home/python.exe" ]; then
+      PYTHONPATH="$v/Lib/site-packages${PYTHONPATH:+;$PYTHONPATH}" exec "$home/python.exe" "$d/../lib/prose_impl.py" "$@"
+    fi
+  fi
 fi
 exec "$d/prose_launch.py" "$@"
