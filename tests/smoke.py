@@ -123,6 +123,99 @@ def build_project(root: Path) -> None:
     subprocess.run(["git", "init", "-q"], cwd=str(root), capture_output=True)
 
 
+def prose_culprit_checks(prose_impl, scratch: Path) -> None:
+    """prose names the file, line and text of each failure, and says how to fix it."""
+    engine = PLUGINS / "writing" / "lib" / "prose_impl.py"
+
+    # A bracket is a fact only when it holds a clause.
+    check("a bracketed id is not a fact", prose_impl.clause_count("Cap it at 12 (D6) and ship") == 1)
+    check("a bracketed file:line is not a fact",
+          prose_impl.clause_count("Read the guard at (src/a.c:12) before the call") == 1)
+    check("a short see-reference is not a fact",
+          prose_impl.clause_count("The setup is fine (see docs/x.md) and quick") == 1)
+    check("a bracket holding a clause is a fact",
+          prose_impl.clause_count("Use the cache (it holds the parsed dictionary) and go") == 2)
+    check("a semicolon is still a fact", prose_impl.clause_count("Reads it; checks it; reports it") == 3)
+    check("a spaced dash is still a fact", prose_impl.clause_count("Reads it - checks it - reports it") == 3)
+    check("code spans do not hide or add facts",
+          prose_impl.clause_count("Run `a; b` then (D6) and stop here") == 1)
+    check("dense_fix names the semicolon and where",
+          'split at the semicolon after "it; checks it"' in prose_impl.dense_fix("Reads it; checks it; reports it"),
+          prose_impl.dense_fix("Reads it; checks it; reports it"))
+    check("dense_fix names a clause bracket",
+          "bracket" in prose_impl.dense_fix("Skip it; load it (the cache holds all the parsed words) now"))
+
+    # Bullets carry their line, and a fenced block is data, not bullets.
+    doc = "Intro.\n\n- first item has four words\n```\n- fenced item has four words\n```\n- second item has four words\n"
+    got = prose_impl.bullet_lines(doc)
+    check("bullet_lines reports the line and skips fences", [n for n, _ in got] == [3, 7], repr(got))
+
+    # Locating and fixing a long sentence.
+    long_sentence = ("This one keeps going " + "and going " * 20 + "until it stops; then it ends.")
+    check("locate finds the line of a sentence", prose_impl.locate("Intro.\n\n**" + long_sentence + "**\n", long_sentence) == 3)
+    check("split_hint prefers the semicolon", prose_impl.split_hint(long_sentence, 40) == "split at the semicolon")
+    check("mask_code keeps offsets",
+          len(prose_impl.mask_code("a `x — y` b\n```\n·\n```\n")) == len("a `x — y` b\n```\n·\n```\n")
+          and "—" not in prose_impl.mask_code("a `x — y` b"))
+
+    # --help prints usage; a missing file is a message, not a traceback.
+    for args in (["--help"], ["check", "--help"], ["score", "-h"]):
+        r = subprocess.run([sys.executable, str(engine), *args], capture_output=True, text=True)
+        check(f"prose {' '.join(args)} prints usage",
+              r.returncode == 0 and "prose" in r.stdout,
+              r.stdout + r.stderr)
+    check("prose check --help is the check usage",
+          "prose check" in subprocess.run([sys.executable, str(engine), "check", "--help"],
+                                          capture_output=True, text=True).stdout)
+    r = subprocess.run([sys.executable, str(engine), "check", "no-such-file.md"],
+                       capture_output=True, text=True)
+    check("a missing file is a message, not a traceback",
+          r.returncode == 2 and "Traceback" not in r.stderr and "cannot read" in r.stderr, r.stderr)
+
+    # End to end needs textstat. Skipped, not failed, where it is not installed.
+    try:
+        import textstat  # noqa: F401
+    except ImportError:
+        print("  skip  prose end to end (textstat not importable here)")
+        return
+    sample = scratch / "culprit.md"
+    sample.write_text(
+        "## Notes\n\n"
+        "- Reads the file; checks the sizes; reports every row (D6) and (src/a.c:12).\n"
+        "- Setup is fine (see docs/x.md) and quick to run again today.\n"
+        "- It is essentially done, so ship it — today.\n\n"
+        + long_sentence + "\n",
+        encoding="utf-8")
+    cache = scratch / "syl-cache"
+    env = dict(os.environ, PROSE_CACHE=str(cache))
+    out = subprocess.run([sys.executable, str(engine), "check", "--doc", str(sample)],
+                         capture_output=True, text=True, env=env).stdout
+    name = str(sample)
+    check("a dense bullet names file:line, the text and a fix",
+          f'{name}:3: "Reads the file; checks the sizes' in out and 'split at the semicolon after' in out, out)
+    check("the reference brackets did not make bullet 2 dense", f"{name}:4:" not in out.split("vale")[0], out)
+    check("a long sentence names its line and a fix",
+          f"{name}:7:" in out and "-> split at the semicolon" in out, out)
+    check("a filler phrase names its line", f'{name}:5: "essentially" ->' in out, out)
+    check("a dash names its line", f"{name}:5: " in out and "use a comma or a colon" in out, out)
+
+    # The syllable cache must not change a number. First run builds it, second reads it.
+    probe = ("import sys; sys.path.insert(0, sys.argv[1]); import prose_impl; "
+             "t = prose_impl.textstat_module(); "
+             "print(t.flesch_kincaid_grade('The cat sat on the mat. Considerably unremarkable punctuation arrangements.'))")
+    stock = subprocess.run([sys.executable, "-c",
+                            "import textstat; print(textstat.flesch_kincaid_grade('The cat sat on the mat. "
+                            "Considerably unremarkable punctuation arrangements.'))"],
+                           capture_output=True, text=True).stdout
+    built = subprocess.run([sys.executable, "-c", probe, str(engine.parent)],
+                           capture_output=True, text=True, env=env).stdout
+    cached = subprocess.run([sys.executable, "-c", probe, str(engine.parent)],
+                            capture_output=True, text=True, env=env).stdout
+    check("the syllable cache is written", (cache / "prose-syllables.db").exists())
+    check("a cached run gives textstat's own grade", stock and stock == built == cached,
+          f"{stock!r} {built!r} {cached!r}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="smoke.py")
     parser.add_argument("--keep", action="store_true", help="leave the temp project behind")
@@ -825,6 +918,7 @@ def main() -> int:
               and any("over-wide" in f for f in unwrapped), repr(unwrapped))
         check("an em-dash in a commit message is refused",
               any("dash" in f for f in commit_fails("s\n\nA body — here.\n")))
+        prose_culprit_checks(prose_impl, fresh)
     except Exception as exc:  # pragma: no cover
         check("prose stripper importable", False, str(exc))
 

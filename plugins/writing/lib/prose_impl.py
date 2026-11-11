@@ -15,6 +15,7 @@ sessions (2026-08-22), not from taste. See BASELINE.md.
     prose commit <file|->      check a commit message: subject, body, trailers
                   --install-hook   write .git/hooks/commit-msg in this repo
     prose ab     [A] [B]       A/B two output styles on the eval questions
+    prose <command> --help     usage for one command
 
 check and commit exit 1 if any hard limit is broken, so either can gate a hook
 or CI. `prose commit` is the one meant to run as `commit-msg`, where a non-zero
@@ -80,11 +81,146 @@ def without_code(t):
     return re.sub(r"`[^`]*`", " ", t)
 
 
+def mask_code(t):
+    """`without_code`, but code becomes spaces of the same length.
+
+    Offsets and line numbers in the result are the same as in the input, so a
+    match found here can be reported as a line of the real file.
+    """
+    def blank(m):
+        return re.sub(r"[^\n]", " ", m.group(0))
+
+    t = re.sub(r"<!--\s*vale off\s*-->.*?<!--\s*vale on\s*-->", blank, t, flags=re.S | re.I)
+    t = re.sub(r"```.*?```", blank, t, flags=re.S)
+    return re.sub(r"`[^`]*`", blank, t)
+
+
 def read(arg):
     if arg == "-":
         return sys.stdin.read()
-    with open(arg, encoding="utf-8") as f:
-        return f.read()
+    try:
+        with open(arg, encoding="utf-8") as f:
+            return f.read()
+    except OSError as e:
+        print(f"prose: cannot read {arg}: {e.strerror or e}", file=sys.stderr)
+        raise SystemExit(2)
+
+
+# --- textstat without the dictionary load -----------------------------------
+# textstat counts syllables from nltk's cmudict. Reading that corpus takes
+# about 0.8 s and importing nltk another 0.3 s, on every run, to look up a few
+# hundred words. Only the syllable count of the first pronunciation is ever
+# used, so it is kept once in a small cache file and nltk is never imported.
+# Same numbers, no nltk. Any failure falls back to the stock textstat.
+
+SYL_SCHEMA = 2
+
+
+def cache_dir():
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    return os.environ.get("PROSE_CACHE") or os.path.join(base, "claude-kit")
+
+
+class _Syllables:
+    """Stands in for nltk's cmudict: word -> [[phones]], only the count matters.
+
+    The counts sit in a sqlite file and are read a word at a time: unpacking
+    all 126,000 entries into a dict cost more than the rest of the run.
+    """
+
+    def __init__(self, con):
+        self.con = con
+
+    def __getitem__(self, word):
+        row = self.con.execute("SELECT n FROM s WHERE w = ?", (word,)).fetchone()
+        if row is None:
+            raise KeyError(word)
+        return [["1"] * row[0]]
+
+
+class _LazyPyphen:
+    """textstat builds its hyphenation dictionary on every count, 0.12 s, for the
+    few words the pronunciation table lacks. Build it on the first such word."""
+
+    def __init__(self, build):
+        self.build = build
+        self.real = None
+
+    def positions(self, word):
+        if self.real is None:
+            self.real = self.build()
+        return self.real.positions(word)
+
+
+_TEXTSTAT = None
+
+
+def _open_syllables(path):
+    import pathlib
+    import sqlite3
+
+    try:
+        con = sqlite3.connect(pathlib.Path(path).as_uri() + "?mode=ro", uri=True)
+        if con.execute("PRAGMA user_version").fetchone()[0] == SYL_SCHEMA:
+            return con
+        con.close()
+    except sqlite3.Error:
+        pass
+    return None
+
+
+def _build_syllables(path, textstat):
+    """Write the cache from the real dictionary. Failure is fine: no cache."""
+    import sqlite3
+
+    from textstat.backend.utils import get_cmudict
+
+    d = get_cmudict("en_US")
+    rows = [(w, sum(1 for p in v[0] if p[-1].isdigit())) for w, v in d.items() if v]
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.{os.getpid()}"
+    con = sqlite3.connect(tmp)
+    con.execute("CREATE TABLE s (w TEXT PRIMARY KEY, n INTEGER) WITHOUT ROWID")
+    con.executemany("INSERT INTO s VALUES (?, ?)", rows)
+    con.execute(f"PRAGMA user_version = {SYL_SCHEMA}")
+    con.commit()
+    con.close()
+    os.replace(tmp, path)
+
+
+def textstat_module():
+    global _TEXTSTAT
+    if _TEXTSTAT is not None:
+        return _TEXTSTAT
+    path = os.path.join(cache_dir(), "prose-syllables.db")
+    con = _open_syllables(path) if os.path.exists(path) else None
+    if con is not None and "nltk" not in sys.modules:
+        import types
+
+        sys.modules["nltk"] = types.ModuleType("nltk")
+        import textstat
+
+        mod = sys.modules.get("textstat.backend.counts._count_syllables")
+        if mod is not None and hasattr(mod, "get_cmudict"):
+            cmu = _Syllables(con)
+            mod.get_cmudict = lambda lang: cmu if str(lang).startswith("en") else None
+            real_pyphen = getattr(mod, "get_pyphen", None)
+            if real_pyphen is not None:
+                mod.get_pyphen = lambda lang: _LazyPyphen(lambda: real_pyphen(lang))
+            _TEXTSTAT = textstat
+            return textstat
+        # The layout changed under us: undo the stub and use the real thing.
+        del sys.modules["nltk"]
+        for k in [k for k in sys.modules if k.startswith("textstat")]:
+            del sys.modules[k]
+    import textstat
+
+    _TEXTSTAT = textstat
+    try:
+        _build_syllables(path, textstat)
+    except Exception:
+        pass
+    return textstat
 
 
 def strip_md(t):
@@ -136,19 +272,64 @@ def sentences(t):
             if len(s.split()) >= 3]
 
 
-def bullets(raw):
+def bullet_lines(raw):
+    """(line number, text) of each list item of 4+ words, outside code fences."""
     out = []
-    for line in raw.splitlines():
+    fenced = False
+    for n, line in enumerate(raw.splitlines(), 1):
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
         m = re.match(r"^\s*(?:[-*+]|\d+\.)\s+(.*)$", line)
         if m and len(m.group(1).split()) >= 4:
-            out.append(m.group(1).strip())
+            out.append((n, m.group(1).strip()))
     return out
+
+
+def bullets(raw):
+    return [text for _, text in bullet_lines(raw)]
+
+
+# A bracket is a fact only when it holds a clause. `(D6)`, `(file:line)` and
+# `(see x.md)` are references, not facts; four words is the least that can say
+# something about the sentence it sits in.
+CLAUSE_MIN_WORDS = 4
+_MARK = re.compile(r"\s\(([^()]*)(?:\)|$)|\s[-—–]\s|;")
+
+
+def clause_info(b):
+    """(count, markers): how many independent facts a bullet carries, and where.
+
+    Each marker is (kind, words before it, bracket text or "").
+    """
+    b = re.sub(r"`[^`]*`", "X", b)
+    marks = []
+    for m in _MARK.finditer(b):
+        before = " ".join(b[:m.start()].split()[-3:])
+        if m.group(1) is not None:
+            if len(m.group(1).split()) >= CLAUSE_MIN_WORDS:
+                marks.append(("bracket", before, m.group(1).strip()))
+        elif m.group(0) == ";":
+            marks.append(("semicolon", before, ""))
+        else:
+            marks.append(("spaced dash", before, ""))
+    return 1 + len(marks), marks
 
 
 def clause_count(b):
     """How many independent facts a bullet is carrying."""
-    b = re.sub(r"`[^`]*`", "X", b)
-    return 1 + len(re.findall(r"\s[-—–]\s|;|\s\(", b))
+    return clause_info(b)[0]
+
+
+def dense_fix(b):
+    """One clause saying how to get a dense bullet under the limit."""
+    n, marks = clause_info(b)
+    kind, before, inner = marks[-1]
+    if kind == "bracket":
+        return f'make the bracket "({inner[:24]}...)" its own bullet, or drop it'
+    return f'split at the {kind} after "{before}"'
 
 
 def as_doc():
@@ -174,20 +355,131 @@ def count_diagrams(raw):
     return n
 
 
+def _line_of(raw, offset):
+    return raw.count("\n", 0, offset) + 1
+
+
+def _flat_with_lines(raw):
+    """raw with markup dropped and whitespace collapsed, and the line of each char."""
+    chars, lines = [], []
+    line = 1
+    gap = False
+    for c in raw:
+        if c == "\n":
+            line += 1
+        if c in "`*_#>":
+            continue
+        if c.isspace():
+            gap = True
+            continue
+        if gap and chars:
+            chars.append(" ")
+            lines.append(line)
+        gap = False
+        chars.append(c)
+        lines.append(line)
+    return "".join(chars), lines
+
+
+def locate(raw, sentence):
+    """1-based line where a sentence of the stripped text starts in raw, or 0."""
+    flat, lines = _flat_with_lines(raw)
+    words = sentence.split()
+    for needle in (words[:6], words[:4], words[:3], words[-4:]):
+        if not needle:
+            continue
+        i = flat.find(" ".join(needle))
+        if i >= 0:
+            return lines[i]
+    return 0
+
+
+def split_hint(sentence, limit):
+    """One clause saying where a long sentence can be cut."""
+    n = len(sentence.split())
+    if ";" in sentence:
+        return "split at the semicolon"
+    if re.search(r"\s[-—–]\s", sentence):
+        return "split at the spaced dash"
+    mid = len(sentence) / 2
+    cands = list(re.finditer(r",\s+(?:and|but|which|so|because|while|then|or)\b", sentence))
+    if cands:
+        c = min(cands, key=lambda m: abs(m.start() - mid))
+        before = " ".join(sentence[:c.start()].split()[-3:])
+        return f'split at the comma after "{before}"'
+    if ": " in sentence:
+        return "split at the colon"
+    return f"cut {n - limit} words or break it at a comma"
+
+
+def _context(line, i, width=24):
+    return line[max(0, i - width):i + width + 1].strip()
+
+
+def culprits(raw, ss, dense, naked, s):
+    """Where each failing metric comes from: key -> [(line, text, fix)]."""
+    out = {}
+    masked = mask_code(raw)
+    mlines = masked.splitlines()
+
+    # longest sentence: every sentence over the limit, longest first
+    long_ = sorted((x for x in ss if len(x.split()) > LIMITS["longest_sentence"]),
+                   key=lambda x: -len(x.split()))
+    out["longest_sentence"] = [
+        (locate(raw, x), f"({len(x.split())} words) {x[:70]}", split_hint(x, LIMITS["longest_sentence"]))
+        for x in long_]
+    if s["fk"] > LIMITS["fk"]:
+        out["fk"] = [
+            (locate(raw, x), f"({len(x.split())} words) {x[:70]}", "shorten the sentence and prefer short words")
+            for x in sorted(ss, key=lambda x: -len(x.split()))[:3]]
+    out["dense_bullets"] = [(n, t[:90], dense_fix(t)) for n, t in dense]
+    out["naked_bullets"] = [(n, t[:90], "end it with a full stop") for n, t in naked]
+
+    for key, chars, fix in (("dashes", "—–", "use a comma or a colon, or start a new sentence"),
+                            ("middots", "·", "use a comma or a full stop")):
+        hits = []
+        for n, line in enumerate(mlines, 1):
+            for i, c in enumerate(line):
+                if c in chars:
+                    hits.append((n, f"...{_context(line, i)}...", fix))
+        out[key] = hits
+
+    out["filler"] = [
+        (_line_of(raw, m.start()), m.group(0), "delete it, the sentence works without it")
+        for m in FILLER.finditer(masked)]
+    out["latex"] = [(_line_of(raw, m.start()), m.group(0), "write it in plain words or in a code span")
+                    for m in LATEX.finditer(raw)]
+    out["mermaid"] = [(_line_of(raw, m.start()), "```mermaid", "use a text diagram or a list")
+                      for m in re.finditer(r"```mermaid", raw)]
+    if PREAMBLE.match(raw.lstrip("#").lstrip()):
+        first = next((i for i, l in enumerate(raw.splitlines(), 1) if l.strip()), 1)
+        out["preamble"] = [(first, raw.lstrip().splitlines()[0][:60], "open with the answer itself")]
+    spans = [m.start() for m in re.finditer(r"\*\*", raw)]
+    over = s["bold"] - LIMITS["bold"]
+    if over > 0 and len(spans) > 2 * LIMITS["bold"]:
+        at = spans[2 * LIMITS["bold"]]
+        out["bold"] = [(_line_of(raw, at), f"{over} spans over the cap, the first over is here",
+                        f"unbold {over}, keep only the term the reader must find")]
+    over = s["words"] - LIMITS["words"]
+    if over > 0:
+        out["words"] = [(0, f"{s['words']} words", f"cut {over} words, or pass --doc if this is a document")]
+    return out
+
+
 def score(raw):
-    import textstat
+    textstat = textstat_module()
 
     t = strip_md(raw)
     ss = sentences(t)
     lens = sorted(len(s.split()) for s in ss) or [0]
-    bs = bullets(raw)
-    dense = [b for b in bs if clause_count(b) >= 3]
-    naked = [b for b in bs if not b.rstrip().endswith((".", ":", "?", "!"))
+    bs = bullet_lines(raw)
+    dense = [(n, b) for n, b in bs if clause_count(b) >= 3]
+    naked = [(n, b) for n, b in bs if not b.rstrip().endswith((".", ":", "?", "!"))
              and len(b.split()) > 14]
     body = raw.lstrip("#").lstrip()
     prose_only = without_code(raw)
     banned = {k: sum(prose_only.count(c) for c in chars) for k, chars in TYPOGRAPHY.items()}
-    return {
+    s = {
         "dashes": banned["em/en dashes"],
         "middots": banned["middots"],
         "words": len(raw.split()),
@@ -206,22 +498,46 @@ def score(raw):
         "latex": len(LATEX.findall(raw)),
         "filler": len(FILLER.findall(t)),
         "preamble": 1 if PREAMBLE.match(body) else 0,
-        "_dense": dense[:5],
-        "_naked": naked[:5],
     }
+    s["_culprits"] = culprits(raw, ss, dense, naked, s)
+    return s
 
 
-def report(s, name="text"):
+def _where(path, line):
+    if path and line:
+        return f"{path}:{line}"
+    return path or (f"line {line}" if line else "")
+
+
+def report(s, name="text", path=None):
+    """Print the rows. A failing row is followed by what to change, where.
+
+    `path` is the file the text came from: with it a culprit reads file:line, so
+    an editor or an agent can jump there. Without it (a transcript message) it
+    reads `line N` within the message.
+    """
     fails = []
+    cul = s.get("_culprits", {})
+
+    def detail(key, shown):
+        rows = cul.get(key, [])
+        lines = [f'    {_where(path, ln)}: "{txt}" -> {fix}' if txt else
+                 f"    {_where(path, ln)}: {fix}" for ln, txt, fix in rows]
+        if len(lines) > shown:
+            lines = lines[:shown] + [f"    ...and {len(rows) - shown} more"]
+        return lines
 
     def row(label, key, limit=None, fmt="{:.0f}"):
         v = s[key]
         bad = limit is not None and v > limit
-        if bad:
-            fails.append(f"{label}: {fmt.format(v)} > {fmt.format(limit)}")
         mark = "FAIL" if bad else "ok"
         lim = f"<= {fmt.format(limit)}" if limit is not None else ""
         print(f"  {label:<22}{fmt.format(v):>8}   {lim:<8} {mark}")
+        if bad:
+            for ln in detail(key, 5):
+                print(ln)
+            head = f"{label}: {fmt.format(v)} > {fmt.format(limit)}"
+            fails.append("\n".join([head] + detail(key, 3)))
 
     print(f"\n{name}")
     row("words", "words", LIMITS["words"])
@@ -233,6 +549,9 @@ def report(s, name="text"):
     row("bullets", "bullets")
     row("bullets w/ 3+ facts", "dense_bullets", LIMITS["dense_bullets"])
     row("long bullets, no stop", "naked_bullets")
+    if s["naked_bullets"]:
+        for ln in detail("naked_bullets", 5):
+            print(ln)
     row("tables", "tables")
     row("diagrams", "diagrams")
     row("mermaid blocks", "mermaid", 0)
@@ -241,32 +560,68 @@ def report(s, name="text"):
     row("preamble opening", "preamble", 0)
     row("em/en dashes", "dashes", 0)
     row("middots", "middots", 0)
-    for b in s["_dense"]:
-        print(f"    dense bullet ({clause_count(b)} facts): {b[:90]}")
-    for b in s["_naked"]:
-        print(f"    unpunctuated bullet: {b[:90]}")
     return fails
 
 
-def lint(path):
+def _vale_binary():
     vale = (shutil.which("vale") or os.path.join(DATA, "bin", "vale")
             if os.path.exists(os.path.join(DATA, "bin", "vale"))
             else shutil.which("vale") or os.path.expanduser("~/bin/vale"))
-    if not os.path.exists(vale):
+    return vale if os.path.exists(vale) else None
+
+
+def vale_start(path):
+    """Start vale in the background so it runs while the score is computed."""
+    vale = _vale_binary()
+    if vale is None:
+        return None
+    return subprocess.Popen([vale, "--config", VALE_INI, "--output=JSON", path],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+
+def lint(path, shown=None, proc=None):
+    """Run vale. Each finding reads file:line:col rule, the text, and the fix.
+
+    A finding names the offending text and carries the rule's own message,
+    which already says what to do. `shown` is the name to print when the text
+    was piped in and `path` is a temporary file.
+    """
+    if proc is None:
+        proc = vale_start(path)
+    if proc is None:
         print("  vale not installed, skipping")
         return []
-    r = subprocess.run([vale, "--config", VALE_INI, "--output=line", path],
-                       capture_output=True, text=True)
-    out = [l for l in (r.stdout + r.stderr).splitlines() if l.strip()]
-    for l in out[:25]:
-        print("  " + l)
+    stdout, stderr = proc.communicate()
+    name = shown or path
+    try:
+        data = json.loads(stdout or "{}")
+        found = [a for alerts in data.values() for a in alerts]
+    except ValueError:
+        out = [l for l in (stdout + stderr).splitlines() if l.strip()]
+        for l in out[:25]:
+            print("  " + l)
+        return out
+    out = []
+    for a in found:
+        col = (a.get("Span") or [0])[0]
+        where = f"{name}:{a.get('Line', 0)}" + (f":{col}" if col else "")
+        text = a.get("Match") or ""
+        if text:
+            row = f'{where}: {a.get("Check")} "{text}" -> {a.get("Message")}'
+        else:
+            row = f'{where}: {a.get("Check")} -> {a.get("Message")}'
+        out.append((a.get("Check", ""), row))
+    for _, row in out[:25]:
+        print("  " + row)
+    if len(out) > 25:
+        print(f"  ...and {len(out) - 25} more")
     # A suggestion informs; it does not fail a check. Rules that cannot be
     # decided by regex alone (Unverified) live at that level on purpose.
     soft = ("Minh.Unverified",)
-    return [l for l in out if not any(s in l for s in soft)]
+    return [row for check, row in out if check not in soft]
 
 
-def check_diagram(raw):
+def check_diagram(raw, shown=None):
     fails = []
     lines = [l.rstrip() for l in raw.splitlines()]
     box = [(i, l) for i, l in enumerate(lines, 1) if sum(c in BOX for c in l) >= 3]
@@ -276,8 +631,12 @@ def check_diagram(raw):
     print(f"  {len(box)} box-drawing lines")
     for i, l in box:
         if len(l) > LIMITS["diagram_width"]:
-            fails.append(f"line {i}: {len(l)} cols > {LIMITS['diagram_width']}")
-            print(f"  FAIL line {i}: {len(l)} columns")
+            over = len(l) - LIMITS["diagram_width"]
+            where = f"{shown}:{i}" if shown else f"line {i}"
+            msg = (f'{where}: box line is {len(l)} columns, limit {LIMITS["diagram_width"]}'
+                   f' -> trim {over} columns from "{l.strip()[:30]}..."')
+            fails.append(msg)
+            print("  FAIL " + msg)
     verts = {}
     for i, l in box:
         for c, ch in enumerate(l):
@@ -565,8 +924,10 @@ def check_commit(raw, name="commit message"):
         lim = f"<= {limit}" if limit is not None else ""
         print(f"  {label:<22}{value:>8}   {lim:<8} {'FAIL' if bad else 'ok'}")
 
-    row("subject chars", len(subject), cfg["subject_max"])
-    row("body words", body_words, cfg["body_words_max"])
+    row("subject chars", len(subject), cfg["subject_max"],
+        f' on line 1 -> cut {len(subject) - cfg["subject_max"]} characters: "{subject[:40]}..."')
+    row("body words", body_words, cfg["body_words_max"],
+        f' -> cut {body_words - cfg["body_words_max"]} words from the body, say what and why only')
 
     # A blank second line is what makes the subject a subject. Without it git
     # treats the whole thing as one paragraph and --oneline shows all of it.
@@ -584,7 +945,8 @@ def check_commit(raw, name="commit message"):
         if len(line) > cfg["wrap"] and " " in line.strip()
     ]
     row("over-wide lines", len(long_lines), 0,
-        f" (line {long_lines[0]})" if long_lines else "")
+        f' (message line {long_lines[0]}: "{lines[long_lines[0] - 1][:30]}...")'
+        f' -> wrap at {cfg["wrap"]} columns' if long_lines else "")
 
     stamped = [
         line for line in lines
@@ -592,11 +954,14 @@ def check_commit(raw, name="commit message"):
     ]
     row("machine trailers", len(stamped), 0)
     for line in stamped[:3]:
-        print(f"    {line.strip()[:70]}")
+        print(f'    "{line.strip()[:70]}" -> delete this line')
 
     banned = set("".join(TYPOGRAPHY.values()))
     typo = sum(without_code("\n".join(lines)).count(c) for c in banned)
-    row("em/en dashes, middots", typo, 0)
+    where = next((f'message line {n}: "{l.strip()[:40]}"' for n, l in enumerate(lines, 1)
+                  if any(c in mask_code(l) for c in banned)), "")
+    row("em/en dashes, middots", typo, 0,
+        f" ({where}) -> use a comma, a colon or a full stop" if typo else "")
 
     return fails
 
@@ -658,25 +1023,89 @@ def install_hook():
     return 0
 
 
+NEEDS_FILE = ("score", "lint", "check", "chart", "diagram")
+USAGE = {
+    "score": "usage: prose score [--doc] <file|->\n"
+             "  Readability numbers for one text. Each failing row names file:line, the\n"
+             "  offending text and a one-clause fix. --doc drops the word and bold caps.\n"
+             "  Exit 1 if a limit is broken.",
+    "lint": "usage: prose lint <file|->\n  Vale only. Each finding reads file:line:col rule, the text and the fix.",
+    "check": "usage: prose check [--doc] <file|->\n"
+             "  score + vale + diagram width in one report, ending PROSE OK or PROSE FAIL (n).\n"
+             "  Each failure names file:line, the offending text and how to fix it.\n"
+             "  --doc: it is a document, not a reply, so no word or bold cap. Exit 1 on a fail.",
+    "commit": "usage: prose commit <file|->\n"
+              "       prose commit --install-hook\n"
+              "  Checks a commit message: subject, body words, wrap, trailers, dashes.\n"
+              "  Exit 1 refuses the commit, so it can run as the commit-msg hook.",
+    "diagram": "usage: prose diagram <file|->\n  Checks that unicode box diagrams fit in 78 columns.",
+    "chart": "usage: prose chart <file|->\n  Turns label<TAB>value lines into an ascii bar chart.",
+    "base": "usage: prose base [dir]\n  Re-derives the corpus baseline from transcripts.",
+    "recent": "usage: prose recent [N] [dir]\n  Scores the last N assistant messages.",
+    "ab": "usage: prose ab [--model M] [--limit N] [--workers N] [A] [B]\n  A/B two output styles.",
+}
+
+
+def _shown(arg):
+    return "<stdin>" if arg == "-" else arg
+
+
+def _lint_begin(raw, arg):
+    """Start vale on the file, or on a temporary copy when the text came from stdin."""
+    if arg != "-":
+        return vale_start(arg), arg, None
+    import tempfile
+
+    d = tempfile.mkdtemp()
+    tmp = os.path.join(d, "stdin.md")
+    with open(tmp, "w", encoding="utf-8", newline="") as f:
+        f.write(raw)
+    return vale_start(tmp), tmp, d
+
+
+def _lint_end(job, shown):
+    proc, path, d = job
+    try:
+        return lint(path, shown, proc)
+    finally:
+        if d:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+def _lint_text(raw, arg, shown):
+    return _lint_end(_lint_begin(raw, arg), shown)
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
         return 0
     cmd, rest = sys.argv[1], sys.argv[2:]
+    if cmd in ("-h", "--help", "help"):
+        print(__doc__)
+        return 0
+    if "-h" in rest or "--help" in rest:
+        print(USAGE.get(cmd, __doc__))
+        return 0
+    if cmd in NEEDS_FILE and not rest:
+        print(f"prose {cmd} needs a file, or - for stdin (prose {cmd} --help)", file=sys.stderr)
+        return 2
     if "--doc" in rest:
         rest.remove("--doc")
         as_doc()
     if cmd == "score":
-        return 1 if report(score(read(rest[0])), rest[0]) else 0
+        return 1 if report(score(read(rest[0])), rest[0], path=_shown(rest[0])) else 0
     if cmd == "lint":
-        return 1 if lint(rest[0]) else 0
+        return 1 if _lint_text(read(rest[0]), rest[0], _shown(rest[0])) else 0
     if cmd == "check":
         raw = read(rest[0])
-        f = report(score(raw), rest[0])
+        shown = _shown(rest[0])
+        job = _lint_begin(raw, rest[0])  # vale runs while the score is computed
+        f = report(score(raw), rest[0], path=shown)
         print("\nvale")
-        f += lint(rest[0])
+        f += _lint_end(job, shown)
         print("\ndiagram")
-        f += check_diagram(raw)
+        f += check_diagram(raw, shown)
         print("\n" + ("PROSE OK" if not f else f"PROSE FAIL ({len(f)})"))
         for x in f[:15]:
             print("  " + str(x))
@@ -711,7 +1140,7 @@ def main():
         chart(read(rest[0]))
         return 0
     if cmd == "diagram":
-        return 1 if check_diagram(read(rest[0])) else 0
+        return 1 if check_diagram(read(rest[0]), _shown(rest[0])) else 0
     if cmd == "ab":
         opts = {"--model": "sonnet", "--limit": None, "--workers": "6"}
         for k in list(opts):

@@ -52,7 +52,11 @@ def venv_python(root: Path) -> Path:
 def has_deps(python: str | Path) -> bool:
     try:
         result = subprocess.run(
-            [str(python), "-c", "import textstat, plotext"],
+            # find_spec, not import: importing textstat and plotext cost 1.2 s
+            # to learn what the file system already says.
+            [str(python), "-c",
+             "import importlib.util as u,sys;"
+             "sys.exit(0 if all(u.find_spec(m) for m in ('textstat','plotext')) else 1)"],
             capture_output=True,
             timeout=30,
         )
